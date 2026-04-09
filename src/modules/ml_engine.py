@@ -25,6 +25,7 @@ import pefile
 import lightgbm as lgb
 from .loading import Spinner
 from . import utils
+from pathlib import Path
 
 try:
     import thrember
@@ -33,13 +34,14 @@ except ImportError:
     _THREMBER_AVAILABLE = False
     print("[!] Warning: 'thrember' library not found. Local ML scanning will be unavailable.")
 
+_BASE_DIR = Path(__file__).resolve().parent.parent  # goes up from modules/ to C:\CyberSentinel\
 
 class LocalScanner:
     def __init__(
         self,
-        all_model_path: str = "./models/CyberSentinel_v2.model",
-        family_model_path: str = "./models/EMBER2024_family.model",
-        labels_path: str = "./models/family_labels.json",
+        all_model_path: str = str(_BASE_DIR / "models" / "CyberSentinel_v2.model"),
+        family_model_path: str = str(_BASE_DIR / "models" / "EMBER2024_family.model"),
+        labels_path: str = str(_BASE_DIR / "models" / "family_labels.json"),
         threshold: float = 0.6,
     ):
         self.all_model_path = all_model_path
