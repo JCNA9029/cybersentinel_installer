@@ -316,10 +316,34 @@ def _force_rmtree(path: Path) -> None:
     Fall back: clone EMBER2024 from GitHub then install thrember.
     Requires Git (installs it silently if absent).
     """
-    git_exe  = ensure_git()
+
+def _clone_and_install_thrember() -> None:
+    """Clone EMBER2024 from GitHub then install thrember."""
+    git_exe = ensure_git()
     clone_dir = Path(tempfile.gettempdir()) / "EMBER2024"
 
     _force_rmtree(clone_dir)
+
+    for attempt in range(1, 4):
+        log(f"Cloning EMBER2024 repo (attempt {attempt}/3)...")
+        result = subprocess.run(
+            [git_exe, "clone", "--depth=1",
+             "https://github.com/FutureComputing4AI/EMBER2024",
+             str(clone_dir)],
+            capture_output=True, text=True, encoding="utf-8", errors="replace"
+        )
+        if result.returncode == 0:
+            log("Clone successful.")
+            break
+        log(f"Clone failed:\nSTDOUT: {result.stdout}\nSTDERR: {result.stderr}", "WARN")
+        time.sleep(3)
+    else:
+        fail(
+            "Failed to clone the EMBER2024 repository after 3 attempts. "
+            "Please check your internet connection and re-run the installer."
+        )
+
+    _install_thrember_from(clone_dir)
 
     for attempt in range(1, 4):
         log(f"Cloning EMBER2024 repo (attempt {attempt}/3)...")
