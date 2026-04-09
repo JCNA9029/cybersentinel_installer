@@ -1,4 +1,4 @@
-# cybersentinel_installer
+# cybersentinel_installer (Still has bugs)
 
 **Recommended Specs (For AI Analyst)** 
 
