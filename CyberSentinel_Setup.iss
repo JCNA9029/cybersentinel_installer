@@ -71,7 +71,10 @@ Name: "startonboot";    Description: "Start Ollama automatically on &login"; Gro
 
 [Files]
 ; ── Application source tree ──────────────────────────────────
-Source: "src\*"; DestDir: "{#MyInstallDir}"; Flags: recursesubdirs createallsubdirs; Components: core
+; BUG 1 FIX: was "src\*" which nested files into C:\CyberSentinel\CyberSentinel\
+; making shortcuts point to the wrong path ("No such file or directory").
+; Fix: use src\CyberSentinel\* so files land directly at C:\CyberSentinel\gui.py
+Source: "src\CyberSentinel\*"; DestDir: "{#MyInstallDir}"; Flags: recursesubdirs createallsubdirs ignoreversion; Components: core
 
 ; ── Installer helper scripts ─────────────────────────────────
 Source: "installer_tools\install_helper.py";   DestDir: "{#MyInstallDir}\installer_tools"; Components: core
