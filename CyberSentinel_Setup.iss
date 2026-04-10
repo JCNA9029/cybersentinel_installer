@@ -49,6 +49,7 @@ english.InstallingPython=Installing Python 3.12...
 english.EnsuringPip=Ensuring pip is available...
 english.InstallingDeps=Installing Python dependencies...
 english.InstallingThrember=Installing EMBER2024 (thrember)...
+english.InstallingNpcap=Installing Npcap packet-capture driver (required for JA3 TLS monitor)...
 english.InstallingOllama=Installing Ollama...
 english.DownloadingModels=Downloading AI models (~4.5 GB) — please wait, this may take several minutes...
 english.ImportingLLM=Importing CyberSentinel AI Analyst model into Ollama...
@@ -127,6 +128,19 @@ Filename: "{reg:HKLM\SOFTWARE\{#MyAppName},PythonExe|python.exe}"; \
   WorkingDir: "{#MyInstallDir}"; \
   Flags: runhidden waituntilterminated; \
   BeforeInstall: SetStep('Installing EMBER2024 / thrember engine...')
+
+; ── Step 3b: Npcap — packet-capture driver for scapy / JA3 monitor ───────────
+; scapy is already installed by the deps step above, but on Windows it also
+; needs Npcap (the WinPcap-compatible kernel driver) to actually capture packets.
+; Without Npcap, Ja3Monitor silently disables itself at runtime.
+; install_helper.py::step_npcap() checks the registry before downloading,
+; so this is safe to re-run and won't reinstall if Npcap is already present.
+Filename: "{reg:HKLM\SOFTWARE\{#MyAppName},PythonExe|python.exe}"; \
+  Parameters: """{#MyInstallDir}\installer_tools\install_helper.py"" --step npcap"; \
+  StatusMsg: "{cm:InstallingNpcap}"; \
+  WorkingDir: "{#MyInstallDir}"; \
+  Flags: runhidden waituntilterminated; \
+  BeforeInstall: SetStep('Installing Npcap driver for JA3 TLS fingerprinting...')
 
 ; ── Step 4: Ollama ───────────────────────────────────────────
 Filename: "{reg:HKLM\SOFTWARE\{#MyAppName},PythonExe|python.exe}"; \

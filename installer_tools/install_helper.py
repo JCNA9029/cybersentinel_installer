@@ -448,6 +448,92 @@ def step_thrember():
 # ═══════════════════════════════════════════════════════════════
 #  STEP: ollama
 # ═══════════════════════════════════════════════════════════════
+def step_npcap():
+    """
+    Downloads and silently installs Npcap — the Windows packet-capture driver
+    required by scapy for live TLS sniffing (JA3 C2 fingerprinting).
+
+    Npcap is NOT a Python package, so pip cannot install it.
+    We download the official installer from npcap.com and run it silently.
+
+    Silent flags used:
+      /S           — silent mode (no GUI)
+      /winpcap_mode=yes — enables WinPcap compatibility so scapy works out-of-the-box
+      /loopback_support=yes — enables loopback adapter (useful for local testing)
+
+    Safe to re-run: if Npcap is already installed the installer exits cleanly.
+    """
+    log("=== STEP: Installing Npcap (required by scapy / JA3 monitor) ===")
+
+    NPCAP_URL      = "https://npcap.com/dist/npcap-1.79.exe"
+    NPCAP_FILENAME = "npcap_installer.exe"
+    npcap_path     = Path(tempfile.gettempdir()) / NPCAP_FILENAME
+
+    # ── Check if Npcap is already installed (registry key written by Npcap installer) ──
+    import winreg
+    already_installed = False
+    for hive in (winreg.HKEY_LOCAL_MACHINE,):
+        for sub in (
+            r"SOFTWARE\Npcap",
+            r"SOFTWARE\WOW6432Node\Npcap",
+        ):
+            try:
+                winreg.OpenKey(hive, sub)
+                already_installed = True
+                break
+            except OSError:
+                pass
+        if already_installed:
+            break
+
+    if already_installed:
+        log("Npcap already installed — skipping download.")
+        return
+
+    # ── Download ──────────────────────────────────────────────────────────────
+    log(f"Downloading Npcap from {NPCAP_URL} ...")
+    try:
+        import urllib.request
+        urllib.request.urlretrieve(NPCAP_URL, npcap_path)
+    except Exception as exc:
+        fail(
+            f"Failed to download Npcap: {exc}\n"
+            "Please install Npcap manually from https://npcap.com/#download\n"
+            "then re-run the installer, or install scapy and Npcap yourself\n"
+            "if you want to use the JA3 TLS fingerprint monitor."
+        )
+
+    # ── Silent install ────────────────────────────────────────────────────────
+    log("Installing Npcap silently (this requires Administrator privileges)...")
+    result = subprocess.run(
+        [
+            str(npcap_path),
+            "/S",                       # silent — no GUI
+            "/winpcap_mode=yes",        # WinPcap compatibility (needed by scapy)
+            "/loopback_support=yes",    # loopback adapter for local testing
+        ],
+        capture_output=True,
+    )
+
+    # Npcap installer returns 0 on success; 1 if a reboot is needed (still OK).
+    if result.returncode not in (0, 1):
+        fail(
+            f"Npcap installer exited with code {result.returncode}.\n"
+            "Please install Npcap manually from https://npcap.com/#download"
+        )
+
+    if result.returncode == 1:
+        log("Npcap installed — a system reboot may be required for the driver to activate.")
+    else:
+        log("Npcap installed successfully.")
+
+    # Tidy up temp file
+    try:
+        npcap_path.unlink()
+    except OSError:
+        pass
+
+
 def step_ollama():
     log("=== STEP: Installing Ollama ===")
     installer = Path(tempfile.gettempdir()) / "OllamaSetup.exe"
@@ -552,6 +638,7 @@ def main():
     dispatch = {
         "deps":      step_deps,
         "thrember":  step_thrember,
+        "npcap":     step_npcap,
         "ollama":    step_ollama,
         "models":    step_models,
         "configure": step_configure,
