@@ -52,7 +52,7 @@ class DriverGuard:
             print(f"[!] DriverGuard: LOLDrivers database not found at {_DATA_PATH}")
             return
         try:
-            with open(_DATA_PATH, "r") as f:
+            with open(_DATA_PATH, "r", encoding="utf-8") as f:
                 data = json.load(f)
             for entry in data.get("drivers", []):
                 key = entry["sha256"].lower()

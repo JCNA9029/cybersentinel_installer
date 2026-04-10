@@ -42,7 +42,7 @@ class LolbinDetector:
             print(f"[!] LolbinDetector: pattern database not found at {_DATA_PATH}")
             return
         try:
-            with open(_DATA_PATH, "r") as f:
+            with open(_DATA_PATH, "r", encoding="utf-8") as f:
                 data = json.load(f)
             for entry in data.get("binaries", []):
                 key = entry["name"].lower()

