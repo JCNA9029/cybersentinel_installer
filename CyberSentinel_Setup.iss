@@ -46,6 +46,7 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 [CustomMessages]
 english.CheckingPython=Checking for Python 3.12...
 english.InstallingPython=Installing Python 3.12...
+english.EnsuringPip=Ensuring pip is available...
 english.InstallingDeps=Installing Python dependencies...
 english.InstallingThrember=Installing EMBER2024 (thrember)...
 english.InstallingOllama=Installing Ollama...
@@ -84,12 +85,13 @@ Source: "installer_tools\check_python.bat";    DestDir: "{#MyInstallDir}\install
 
 [Icons]
 ; Desktop shortcut
-Name: "{userdesktop}\CyberSentinel GUI"; Filename: "pythonw.exe"; Parameters: """{#MyInstallDir}\gui.py"""; WorkingDir: "{#MyInstallDir}"; IconFilename: "{#MyInstallDir}\assets\icon.ico"; Tasks: desktopicon
+; {reg:...} reads the exact Python path saved during install — never picks up a wrong Python from PATH.
+Name: "{userdesktop}\CyberSentinel GUI"; Filename: "{reg:HKLM\SOFTWARE\{#MyAppName},PythonwExe|pythonw.exe}"; Parameters: """{#MyInstallDir}\gui.py"""; WorkingDir: "{#MyInstallDir}"; IconFilename: "{#MyInstallDir}\assets\icon.ico"; Tasks: desktopicon
 
 ; Start Menu group
-Name: "{group}\CyberSentinel GUI";        Filename: "pythonw.exe";  Parameters: """{#MyInstallDir}\gui.py""";         WorkingDir: "{#MyInstallDir}"; IconFilename: "{#MyInstallDir}\assets\icon.ico"; Tasks: startmenuicon
-Name: "{group}\CyberSentinel CLI";        Filename: "cmd.exe";      Parameters: "/k python ""{#MyInstallDir}\CyberSentinel.py"" --help"; WorkingDir: "{#MyInstallDir}"; Tasks: startmenuicon
-Name: "{group}\CyberSentinel Dashboard";  Filename: "cmd.exe";      Parameters: "/k python ""{#MyInstallDir}\dashboard.py""";            WorkingDir: "{#MyInstallDir}"; Tasks: startmenuicon
+Name: "{group}\CyberSentinel GUI";        Filename: "{reg:HKLM\SOFTWARE\{#MyAppName},PythonwExe|pythonw.exe}"; Parameters: """{#MyInstallDir}\gui.py""";                                                                          WorkingDir: "{#MyInstallDir}"; IconFilename: "{#MyInstallDir}\assets\icon.ico"; Tasks: startmenuicon
+Name: "{group}\CyberSentinel CLI";        Filename: "cmd.exe"; Parameters: "/k ""{reg:HKLM\SOFTWARE\{#MyAppName},PythonExe|python.exe}"" ""{#MyInstallDir}\CyberSentinel.py"" --help"; WorkingDir: "{#MyInstallDir}"; Tasks: startmenuicon
+Name: "{group}\CyberSentinel Dashboard";  Filename: "cmd.exe"; Parameters: "/k ""{reg:HKLM\SOFTWARE\{#MyAppName},PythonExe|python.exe}"" ""{#MyInstallDir}\dashboard.py""";            WorkingDir: "{#MyInstallDir}"; Tasks: startmenuicon
 Name: "{group}\Uninstall CyberSentinel";  Filename: "{uninstallexe}"; Tasks: startmenuicon
 
 [Run]
@@ -99,15 +101,27 @@ Filename: "{#MyInstallDir}\installer_tools\check_python.bat"; \
   Flags: runhidden waituntilterminated; \
   BeforeInstall: SetStep('Checking Python 3.12...')
 
+; ── Step 1b: Bootstrap pip if missing ────────────────────────
+; Runs ensurepip so that even a minimal Python install has pip
+; before any package installation is attempted.
+Filename: "{reg:HKLM\SOFTWARE\{#MyAppName},PythonExe|python.exe}"; \
+  Parameters: "-m ensurepip --upgrade"; \
+  StatusMsg: "{cm:EnsuringPip}"; \
+  WorkingDir: "{#MyInstallDir}"; \
+  Flags: runhidden waituntilterminated; \
+  BeforeInstall: SetStep('Ensuring pip is available...')
+
 ; ── Step 2 & 3: pip deps + thrember ──────────────────────────
-Filename: "python.exe"; \
+; {reg:...} ensures we use the exact Python that was installed/detected,
+; not whatever 'python.exe' happens to be first on the user's PATH.
+Filename: "{reg:HKLM\SOFTWARE\{#MyAppName},PythonExe|python.exe}"; \
   Parameters: """{#MyInstallDir}\installer_tools\install_helper.py"" --step deps"; \
   StatusMsg: "{cm:InstallingDeps}"; \
   WorkingDir: "{#MyInstallDir}"; \
   Flags: runhidden waituntilterminated; \
   BeforeInstall: SetStep('Installing Python dependencies (this may take 3–5 minutes)...')
 
-Filename: "python.exe"; \
+Filename: "{reg:HKLM\SOFTWARE\{#MyAppName},PythonExe|python.exe}"; \
   Parameters: """{#MyInstallDir}\installer_tools\install_helper.py"" --step thrember"; \
   StatusMsg: "{cm:InstallingThrember}"; \
   WorkingDir: "{#MyInstallDir}"; \
@@ -115,7 +129,7 @@ Filename: "python.exe"; \
   BeforeInstall: SetStep('Installing EMBER2024 / thrember engine...')
 
 ; ── Step 4: Ollama ───────────────────────────────────────────
-Filename: "python.exe"; \
+Filename: "{reg:HKLM\SOFTWARE\{#MyAppName},PythonExe|python.exe}"; \
   Parameters: """{#MyInstallDir}\installer_tools\install_helper.py"" --step ollama"; \
   StatusMsg: "{cm:InstallingOllama}"; \
   WorkingDir: "{#MyInstallDir}"; \
@@ -123,7 +137,7 @@ Filename: "python.exe"; \
   BeforeInstall: SetStep('Installing Ollama inference engine...')
 
 ; ── Step 7: Download models from Google Drive ────────────────
-Filename: "python.exe"; \
+Filename: "{reg:HKLM\SOFTWARE\{#MyAppName},PythonExe|python.exe}"; \
   Parameters: """{#MyInstallDir}\installer_tools\install_helper.py"" --step models"; \
   StatusMsg: "{cm:DownloadingModels}"; \
   WorkingDir: "{#MyInstallDir}"; \
@@ -132,7 +146,7 @@ Filename: "python.exe"; \
   BeforeInstall: SetStep('Downloading AI models (~4.5 GB) — do not close this window...')
 
 ; ── Step 5: Import LLM into Ollama ───────────────────────────
-Filename: "python.exe"; \
+Filename: "{reg:HKLM\SOFTWARE\{#MyAppName},PythonExe|python.exe}"; \
   Parameters: """{#MyInstallDir}\installer_tools\create_modelfile.py"""; \
   StatusMsg: "{cm:ImportingLLM}"; \
   WorkingDir: "{#MyInstallDir}"; \
@@ -141,7 +155,7 @@ Filename: "python.exe"; \
   BeforeInstall: SetStep('Importing CyberSentinel AI Analyst into Ollama (this may take several minutes)...')
 
 ; ── Step 6 & 8: Patch config + register Ollama boot task ─────
-Filename: "python.exe"; \
+Filename: "{reg:HKLM\SOFTWARE\{#MyAppName},PythonExe|python.exe}"; \
   Parameters: """{#MyInstallDir}\installer_tools\install_helper.py"" --step configure"; \
   StatusMsg: "{cm:ConfiguringApp}"; \
   WorkingDir: "{#MyInstallDir}"; \
@@ -155,7 +169,7 @@ Filename: "schtasks.exe"; \
   Tasks: startonboot
 
 ; ── Launch GUI after install ─────────────────────────────────
-Filename: "pythonw.exe"; \
+Filename: "{reg:HKLM\SOFTWARE\{#MyAppName},PythonwExe|pythonw.exe}"; \
   Parameters: """{#MyInstallDir}\gui.py"""; \
   WorkingDir: "{#MyInstallDir}"; \
   Description: "Launch CyberSentinel GUI now"; \
@@ -165,8 +179,12 @@ Filename: "pythonw.exe"; \
 Filename: "schtasks.exe"; Parameters: "/Delete /F /TN ""CyberSentinel\OllamaServer"""; Flags: runhidden waituntilterminated
 
 [Registry]
-Root: HKLM; Subkey: "SOFTWARE\{#MyAppName}"; ValueType: string; ValueName: "InstallDir"; ValueData: "{#MyInstallDir}"; Flags: uninsdeletekey
-Root: HKLM; Subkey: "SOFTWARE\{#MyAppName}"; ValueType: string; ValueName: "Version";    ValueData: "{#MyAppVersion}"
+Root: HKLM; Subkey: "SOFTWARE\{#MyAppName}"; ValueType: string; ValueName: "InstallDir";  ValueData: "{#MyInstallDir}";  Flags: uninsdeletekey
+Root: HKLM; Subkey: "SOFTWARE\{#MyAppName}"; ValueType: string; ValueName: "Version";     ValueData: "{#MyAppVersion}"
+; PythonExe / PythonwExe are written at runtime by ResolvePythonPath in [Code].
+; Declaring them here (with empty defaults) ensures they are removed on uninstall.
+Root: HKLM; Subkey: "SOFTWARE\{#MyAppName}"; ValueType: string; ValueName: "PythonExe";   ValueData: ""; Flags: uninsdeletekeyifempty
+Root: HKLM; Subkey: "SOFTWARE\{#MyAppName}"; ValueType: string; ValueName: "PythonwExe";  ValueData: ""; Flags: uninsdeletekeyifempty
 
 [Code]
 // ─────────────────────────────────────────────────────────────
@@ -174,10 +192,11 @@ Root: HKLM; Subkey: "SOFTWARE\{#MyAppName}"; ValueType: string; ValueName: "Vers
 // ─────────────────────────────────────────────────────────────
 
 var
-  ProgressPage: TOutputProgressWizardPage;
-  StepLabel:    TNewStaticText;
-  LogMemo:      TNewMemo;
-  CurrentStep:  String;
+  ProgressPage:  TOutputProgressWizardPage;
+  StepLabel:     TNewStaticText;
+  LogMemo:       TNewMemo;
+  CurrentStep:   String;
+  PythonExePath: String;  // Resolved after Python install — used by all [Run] steps and shortcuts
 
 // Called from [Run] BeforeInstall to update the visible label
 procedure SetStep(const Msg: String);
@@ -219,6 +238,58 @@ begin
     and (ResultCode = 0);
 end;
 
+// ── Resolve the exact Python 3.12 executable path ────────────
+// Writes result into PythonExePath and saves it to the registry
+// so [Icons] shortcuts and any external tool can read it later.
+procedure ResolvePythonPath;
+var
+  PathTxtFile: String;
+  Candidate:   String;
+  ResultCode:  Integer;
+begin
+  PythonExePath := '';
+  PathTxtFile   := ExpandConstant('{#MyInstallDir}\python_path.txt');
+
+  // Ask the live Python interpreter to report its own executable path.
+  // This is the only reliable way — registry/PATH probing breaks when
+  // multiple Python versions are installed side-by-side.
+  Exec('cmd.exe',
+    '/c python -c "import sys; open(r''' + PathTxtFile + ''',''w'').write(sys.executable)"',
+    '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+
+  if FileExists(PathTxtFile) then begin
+    LoadStringFromFile(PathTxtFile, PythonExePath);
+    PythonExePath := Trim(PythonExePath);
+    DeleteFile(PathTxtFile);   // tidy up temp file
+  end;
+
+  // Belt-and-suspenders: if the above produced nothing, try known install
+  // locations for Python 3.12 (system-wide then per-user).
+  if PythonExePath = '' then begin
+    for Candidate in [
+      'C:\Program Files\Python312\python.exe',
+      'C:\Python312\python.exe',
+      ExpandConstant('{localappdata}\Programs\Python\Python312\python.exe')
+    ] do begin
+      if FileExists(Candidate) then begin
+        PythonExePath := Candidate;
+        Break;
+      end;
+    end;
+  end;
+
+  // Last resort fallback — plain 'python.exe' on PATH.
+  if PythonExePath = '' then
+    PythonExePath := 'python.exe';
+
+  // Persist to registry so shortcuts survive PATH changes after install.
+  RegWriteStringValue(HKLM, 'SOFTWARE\{#MyAppName}', 'PythonExe', PythonExePath);
+
+  // Also derive pythonw.exe (GUI launcher, no console window) from the same dir.
+  RegWriteStringValue(HKLM, 'SOFTWARE\{#MyAppName}', 'PythonwExe',
+    ExtractFilePath(PythonExePath) + 'pythonw.exe');
+end;
+
 // ── Pre-install checks ────────────────────────────────────────
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 var
@@ -253,6 +324,24 @@ begin
       Result := Format('Python 3.12 installation failed (exit code %d). Please install Python 3.12 manually from python.org and re-run this installer.', [ResultCode]);
       Exit;
     end;
+  end;
+
+  // ── Pin the exact Python path used for all subsequent steps ──
+  // Must run AFTER Python is confirmed installed.
+  ResolvePythonPath;
+
+  // ── Verify pip is available, bootstrap if not ────────────────
+  // Catches the edge case where Python was installed without pip
+  // (e.g. per-user install with pip checkbox unchecked).
+  SetStep('Verifying pip is available...');
+  if not Exec(PythonExePath, '-m pip --version',
+    '', SW_HIDE, ewWaitUntilTerminated, ResultCode)
+    or (ResultCode <> 0) then begin
+    log('pip missing — running ensurepip...');
+    Exec(PythonExePath, '-m ensurepip --upgrade',
+      '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+    // If ensurepip also fails, install_helper._ensure_pip() will
+    // attempt the get-pip.py fallback during the deps step.
   end;
 end;
 

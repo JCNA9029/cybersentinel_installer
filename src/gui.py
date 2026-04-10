@@ -33,6 +33,22 @@ import sqlite3
 import datetime
 import threading
 
+# ── Redirect stdout/stderr when running under pythonw.exe ────────────────────
+# pythonw.exe (used by the desktop shortcut) sets sys.stdout and sys.stderr to
+# None because there is no console window.  Any bare print() call — including
+# inside third-party libraries — will raise:
+#     AttributeError: 'NoneType' object has no attribute 'write'
+# Fix: redirect both streams to a rolling log file before anything else runs.
+# This also gives users a gui.log they can send for support.
+if sys.stdout is None or sys.stderr is None:
+    _BASE = os.path.dirname(os.path.abspath(__file__))
+    _log_path = os.path.join(_BASE, "gui.log")
+    _log_fh = open(_log_path, "a", encoding="utf-8", buffering=1)
+    if sys.stdout is None:
+        sys.stdout = _log_fh
+    if sys.stderr is None:
+        sys.stderr = _log_fh
+
 # ── Ensure imports resolve from the project root ──────────────────────────────
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, BASE_DIR)

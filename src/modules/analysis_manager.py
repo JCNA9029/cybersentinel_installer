@@ -147,7 +147,11 @@ class ScannerLogic:
     def log_event(self, message: str, print_to_screen: bool = True):
         """Appends a message to the session log and optionally prints it."""
         if print_to_screen:
-            print(message)
+            try:
+                if sys.stdout is not None:
+                    print(message)
+            except Exception:
+                pass
         self.session_log.append(message)
 
     # ─────────────────────────────────────────────

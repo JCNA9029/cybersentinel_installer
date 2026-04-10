@@ -34,7 +34,7 @@ PyQt6>=6.6.0            # Native desktop GUI (gui.py)
 
 # ── Optional: JA3 C2 Fingerprinting ──────────────────────────
 # Requires Npcap first: https://npcap.com/
-# pip install scapy>=2.5.0
+scapy>=2.5.0
 
 # ── EMBER2024 ML Feature Extraction (thrember + signify) ──────
 # thrember is NOT on PyPI. Install in this order:

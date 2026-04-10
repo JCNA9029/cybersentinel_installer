@@ -79,6 +79,7 @@ PYTHON_DEPS = [
     "pywin32",
     "wmi",
     "gdown",
+    "scapy>=2.5.0",
 ]
 
 OLLAMA_INSTALLER_URL = "https://ollama.com/download/OllamaSetup.exe"
@@ -161,8 +162,69 @@ def pip(*packages: str) -> subprocess.CompletedProcess:
 # ═══════════════════════════════════════════════════════════════
 #  STEP: deps
 # ═══════════════════════════════════════════════════════════════
+def _ensure_pip() -> None:
+    """
+    Guarantee pip is available before any package installs.
+    Three-layer approach:
+      1. Check if pip already works — if yes, done.
+      2. Try ensurepip (built into Python 3.12, works offline).
+      3. Download get-pip.py from PyPA as a last resort.
+    Fails hard if all three layers are exhausted so the user
+    gets a clear message rather than a cryptic 'No module named pip'.
+    """
+    result = subprocess.run(
+        [sys.executable, "-m", "pip", "--version"],
+        capture_output=True, text=True
+    )
+    if result.returncode == 0:
+        log(f"pip already available: {result.stdout.strip()}")
+        return
+
+    log("pip not found — bootstrapping via ensurepip...", "WARN")
+    bootstrap = subprocess.run(
+        [sys.executable, "-m", "ensurepip", "--upgrade"],
+        capture_output=True, text=True, encoding="utf-8", errors="replace"
+    )
+    log(bootstrap.stdout or "")
+    if bootstrap.returncode == 0:
+        log("pip bootstrapped via ensurepip successfully.")
+        return
+
+    log("ensurepip failed — trying get-pip.py fallback...", "WARN")
+    get_pip = Path(tempfile.gettempdir()) / "get-pip.py"
+    if not download("https://bootstrap.pypa.io/get-pip.py", get_pip):
+        fail(
+            "pip is not installed and all attempts to install it failed.\n"
+            "Please reinstall Python 3.12 from python.org, making sure\n"
+            "'Add pip' / 'Install pip' is checked, then re-run the installer."
+        )
+    run([sys.executable, str(get_pip)])
+    log("pip bootstrapped via get-pip.py successfully.")
+
+
+def _register_python_path() -> None:
+    """
+    Save the exact Python executable path to the Windows registry.
+    This lets the Inno Setup [Icons] and [Run] entries read it back
+    via {reg:HKLM\\SOFTWARE\\CyberSentinel,PythonExe} so every shortcut
+    and post-install step uses the same interpreter that installed the deps.
+    """
+    try:
+        import winreg
+        key = winreg.CreateKey(winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\CyberSentinel")
+        winreg.SetValueEx(key, "PythonExe",  0, winreg.REG_SZ, sys.executable)
+        winreg.SetValueEx(key, "PythonwExe", 0, winreg.REG_SZ,
+                          str(Path(sys.executable).parent / "pythonw.exe"))
+        winreg.CloseKey(key)
+        log(f"Registered Python path in registry: {sys.executable}")
+    except Exception as exc:
+        log(f"Could not write Python path to registry: {exc}", "WARN")
+
+
 def step_deps():
     log("=== STEP: Installing Python dependencies ===")
+    _register_python_path()                        # pin this interpreter in registry
+    _ensure_pip()                                  # guarantee pip exists before any install
     pip("--upgrade", "pip", "setuptools", "wheel")
     # Install in chunks to surface individual failures clearly
     for pkg in PYTHON_DEPS:
@@ -312,38 +374,17 @@ def _force_rmtree(path: Path) -> None:
 
     if path.exists():
         shutil.rmtree(path, onerror=_remove_readonly)
+
+
+def _clone_and_install_thrember() -> None:
     """
     Fall back: clone EMBER2024 from GitHub then install thrember.
     Requires Git (installs it silently if absent).
     """
-
-def _clone_and_install_thrember() -> None:
-    """Clone EMBER2024 from GitHub then install thrember."""
-    git_exe = ensure_git()
+    git_exe   = ensure_git()
     clone_dir = Path(tempfile.gettempdir()) / "EMBER2024"
 
     _force_rmtree(clone_dir)
-
-    for attempt in range(1, 4):
-        log(f"Cloning EMBER2024 repo (attempt {attempt}/3)...")
-        result = subprocess.run(
-            [git_exe, "clone", "--depth=1",
-             "https://github.com/FutureComputing4AI/EMBER2024",
-             str(clone_dir)],
-            capture_output=True, text=True, encoding="utf-8", errors="replace"
-        )
-        if result.returncode == 0:
-            log("Clone successful.")
-            break
-        log(f"Clone failed:\nSTDOUT: {result.stdout}\nSTDERR: {result.stderr}", "WARN")
-        time.sleep(3)
-    else:
-        fail(
-            "Failed to clone the EMBER2024 repository after 3 attempts. "
-            "Please check your internet connection and re-run the installer."
-        )
-
-    _install_thrember_from(clone_dir)
 
     for attempt in range(1, 4):
         log(f"Cloning EMBER2024 repo (attempt {attempt}/3)...")
