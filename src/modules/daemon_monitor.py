@@ -1,4 +1,4 @@
-# modules/daemon_monitor.py — Headless Daemon: WMI hook + watchdog + all 6 new detectors
+# modules/daemon_monitor.py — Headless Daemon: WMI hook + watchdog + all detectors
 #
 # Thread map:
 #   Thread 1 (main)    — watchdog folder observer
@@ -23,7 +23,6 @@ from .baseline_engine  import BaselineEngine
 from .amsi_monitor     import AmsiMonitor
 from .amsi_hook        import AmsiScanner, FilelessMonitor
 from .lolbin_detector  import LolbinDetector
-from .driver_guard     import DriverGuard
 from . import colors, utils
 
 WATCHED_EXTENSIONS = (".exe",".dll",".sys",".apk",".elf",".pdf",".bat",".ps1",".vbs",".hta")
@@ -45,7 +44,7 @@ class ThreatHandler(FileSystemEventHandler):
             print(f"[DAEMON] ⚠  Scanner error on {os.path.basename(event.src_path)}: {e}")
 
 
-def _monitor_processes(logic, lolbas, byovd, baseline, dga, lolbin, driver_guard, fileless):
+def _monitor_processes(logic, lolbas, byovd, baseline, dga, lolbin, fileless):
     try:
         import wmi, pythoncom
         pythoncom.CoInitialize()
@@ -81,23 +80,15 @@ def _monitor_processes(logic, lolbas, byovd, baseline, dga, lolbin, driver_guard
                 colors.critical(lolbas.format_alert(hit))
 
             # LolbinDetector — secondary pattern-level check
-            lolbin_hit = lolbin.check_process(name, cmdline)
+            lolbin_hit = lolbin.check(name, cmdline, pid=pid)
             if lolbin_hit:
-                colors.critical(lolbin.format_alert(lolbin_hit))
+                lolbin.print_alert(lolbin_hit)
 
-            # BYOVD check for driver loads
+            # BYOVD — single unified check (SHA256 exact + filename fallback)
             if exe_path.lower().endswith(".sys"):
                 hit = byovd.check_driver(exe_path)
                 if hit:
                     colors.critical(byovd.format_alert(hit))
-
-                # DriverGuard — independent kernel-driver integrity check
-                dg_hit = driver_guard.check_driver(exe_path)
-                if dg_hit:
-                    colors.critical(
-                        f"[DRIVERGUARD] ⚠  Suspicious driver: {dg_hit.get('driver_name','?')} "
-                        f"— {dg_hit.get('description','')[:80]}"
-                    )
 
             # Baseline deviation — skip processes on the exclusion list
             if not baseline.is_learning() and exe_path:
@@ -130,7 +121,7 @@ def _run_correlator(correlator):
         try:
             correlator.run_correlation()
         except Exception:
-            pass  # Non-critical: operation continues regardless
+            pass
 
 
 def start_daemon(target_dir: str):
@@ -143,18 +134,16 @@ def start_daemon(target_dir: str):
     logic = ScannerLogic()
     logic.headless_mode = True
 
-    lolbas       = LolbasDetector()
-    byovd        = ByovdDetector()
-    feodo        = FeodoMonitor()
-    dga          = DgaMonitor()
-    ja3          = Ja3Monitor()
-    correlator   = ChainCorrelator()
-    baseline     = BaselineEngine()
-    amsi         = AmsiMonitor()
-    # ── Newly wired modules ────────────────────────────────────────────────
-    lolbin       = LolbinDetector()
-    driver_guard = DriverGuard(headless=True)
-    fileless     = FilelessMonitor(correlator=correlator)
+    lolbas     = LolbasDetector()
+    byovd      = ByovdDetector()
+    feodo      = FeodoMonitor()
+    dga        = DgaMonitor()
+    ja3        = Ja3Monitor()
+    correlator = ChainCorrelator()
+    baseline   = BaselineEngine()
+    amsi       = AmsiMonitor()
+    lolbin     = LolbinDetector()
+    fileless   = FilelessMonitor(correlator=correlator)
 
     print(f"\n[+] CyberSentinel Daemon v1 Active")
     print(f"[*] 📂  Watching     : {os.path.abspath(target_dir)}")
@@ -163,20 +152,19 @@ def start_daemon(target_dir: str):
     print(f"[*] 🔁  DGA          : entropy analysis active")
     print(f"[*] 🔗  Chains       : {len(ATTACK_CHAINS)} signatures loaded")
     print(f"[*] 🔍  LolbinDetect : pattern DB loaded")
-    print(f"[*] 🛡️   DriverGuard  : kernel driver monitor active")
+    print(f"[*] 💀  BYOVD        : kernel driver monitor active (live feed + static DB)")
     print(f"[*] 🪤  AMSI Hook    : FilelessMonitor + AmsiScanner active")
 
     feodo.start()
     ja3.start()
     amsi.start()
     fileless.start_memory_monitor(scan_interval=120)
-    driver_guard.start_realtime_monitor()
+    byovd.start_realtime_monitor()
     if not baseline.is_learning():
         baseline.start_detection()
 
     threading.Thread(target=_monitor_processes,
-                     args=(logic, lolbas, byovd, baseline, dga,
-                           lolbin, driver_guard, fileless),
+                     args=(logic, lolbas, byovd, baseline, dga, lolbin, fileless),
                      daemon=True).start()
     threading.Thread(target=_run_correlator, args=(correlator,), daemon=True).start()
 
@@ -189,6 +177,7 @@ def start_daemon(target_dir: str):
             time.sleep(1)
     except KeyboardInterrupt:
         observer.stop()
+        byovd.stop_realtime_monitor()
         feodo.stop(); ja3.stop(); amsi.stop()
         print("\n[*] Daemon shutdown complete.")
     observer.join()

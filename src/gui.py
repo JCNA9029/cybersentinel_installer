@@ -464,6 +464,7 @@ class SettingsDialog(QDialog):
         super().__init__(parent)
         self.logic = logic
         self.setWindowTitle("Configure Cloud Integrations")
+        self.setWindowIcon(QIcon(os.path.join(BASE_DIR, "assets", "icon.ico")))
         self.setMinimumWidth(480)
         self.setStyleSheet(BASE_STYLE + f"QDialog {{ background: {THEME['surface']}; }}")
 
@@ -618,7 +619,6 @@ class CyberSentinelGUI(QMainWindow):
             from modules.amsi_monitor     import AmsiMonitor
             from modules.amsi_hook        import AmsiScanner, FilelessMonitor
             from modules.lolbin_detector  import LolbinDetector
-            from modules.driver_guard     import DriverGuard
             from modules.c2_fingerprint   import Ja3Monitor, FeodoMonitor, DgaMonitor
             from modules.intel_updater    import update_all, feed_status
             from modules.network_isolation import isolate_network, restore_network
@@ -631,7 +631,6 @@ class CyberSentinelGUI(QMainWindow):
             self.amsi         = AmsiMonitor()
             # ── Newly wired modules ────────────────────────────────────
             self.lolbin       = LolbinDetector()
-            self.driver_guard = DriverGuard()
             self.fileless     = FilelessMonitor(correlator=self.correlator)
             self.amsi_scanner = AmsiScanner()
             self.feodo        = FeodoMonitor()
@@ -689,7 +688,6 @@ class CyberSentinelGUI(QMainWindow):
             ("lolbas",     self._build_lolbas_page),
             ("lolbin",     self._build_lolbin_page),
             ("byovd",      self._build_byovd_page),
-            ("driver_guard", self._build_driver_guard_page),
             ("chains",     self._build_chains_page),
             ("baseline",   self._build_baseline_page),
             ("fileless",   self._build_fileless_page),
@@ -780,7 +778,6 @@ class CyberSentinelGUI(QMainWindow):
                 ("🪝  LoLBin Abuse",    "lolbas"),
                 ("🔍  LolbinDetector",  "lolbin"),
                 ("💀  BYOVD Drivers",   "byovd"),
-                ("🛡️  DriverGuard",     "driver_guard"),
                 ("🔗  Attack Chains",   "chains"),
                 ("📐  Baseline",        "baseline"),
                 ("👻  Fileless / AMSI", "fileless"),
@@ -986,8 +983,13 @@ class CyberSentinelGUI(QMainWindow):
     def _export_history(self, fmt: str):
         """Prompts for a save path then exports scan_cache to JSON or CSV."""
         from modules import utils as _u
+
+        # Build exports/json/ or exports/csv/ folder and create it if needed
+        export_dir = os.path.join(BASE_DIR, "exports", fmt)
+        os.makedirs(export_dir, exist_ok=True)
+
         ext  = "JSON Files (*.json)" if fmt == "json" else "CSV Files (*.csv)"
-        name = f"cybersentinel_export.{fmt}"
+        name = os.path.join(export_dir, f"cybersentinel_export.{fmt}")
         path, _ = QFileDialog.getSaveFileName(self, f"Export Scan History ({fmt.upper()})", name, ext)
         if not path:
             return
@@ -2146,8 +2148,28 @@ class CyberSentinelGUI(QMainWindow):
         scan_btn.setMinimumWidth(180)
         scan_btn.clicked.connect(self._run_byovd)
         btn_row.addWidget(scan_btn)
+
+        self._byovd_rt_btn = QPushButton("⏱  Start Real-Time Monitor")
+        self._byovd_rt_btn.setMinimumWidth(180)
+        self._byovd_rt_btn.clicked.connect(self._start_byovd_realtime)
+        btn_row.addWidget(self._byovd_rt_btn)
+
+        # ADD: stop button, hidden until monitor starts
+        self._byovd_stop_btn = QPushButton("⏹  Stop Monitor")
+        self._byovd_stop_btn.setMinimumWidth(150)
+        self._byovd_stop_btn.setVisible(False)
+        self._byovd_stop_btn.setStyleSheet(f"background-color: {THEME['red_bg']}; color: {THEME['red']};")
+        self._byovd_stop_btn.clicked.connect(self._stop_byovd_realtime)
+        btn_row.addWidget(self._byovd_stop_btn)
+
         btn_row.addStretch()
         inner_layout.addLayout(btn_row)
+
+        # Status label — hidden until monitor starts
+        self._byovd_rt_status = QLabel("🟢  Real-Time Monitor: Active")
+        self._byovd_rt_status.setStyleSheet(f"color: {THEME['green']}; font-size: 11px;")
+        self._byovd_rt_status.setVisible(False)
+        inner_layout.addWidget(self._byovd_rt_status)
 
         self._byovd_progress = QProgressBar()
         self._byovd_progress.setRange(0, 0)
@@ -2157,7 +2179,7 @@ class CyberSentinelGUI(QMainWindow):
 
         grp = QGroupBox("Driver Scan Results")
         grp_layout = QVBoxLayout(grp)
-        self._byovd_table = make_table(["Driver", "CVE", "SHA-256", "Risk Level", "Details"])
+        self._byovd_table = make_table(["Driver", "CVE", "SHA-256", "Vendor", "Used By", "Details"])
         grp_layout.addWidget(self._byovd_table)
         inner_layout.addWidget(grp, 1)
 
@@ -2184,103 +2206,36 @@ class CyberSentinelGUI(QMainWindow):
         if not findings:
             row = t.rowCount(); t.insertRow(row)
             t.setItem(row, 0, table_item("✅  No vulnerable drivers found", THEME["green"]))
-            for i in range(1, 5):
-                t.setItem(row, i, table_item(""))
+            for i in range(1, 6):
+                t.setItem(row, i, table_item("—"))
         else:
             for f in findings:
                 row = t.rowCount(); t.insertRow(row)
+                tools = ", ".join(f.get("known_tools", [])) or "N/A"
                 t.setItem(row, 0, table_item(f.get("driver_name", "—")))
-                t.setItem(row, 1, table_item(f.get("cve", "N/A"), THEME["red"]))
-                t.setItem(row, 2, table_item(f.get("sha256") or "", THEME["muted"]))
-                t.setItem(row, 3, table_item(f.get("risk_level", "HIGH"), THEME["red"]))
-                t.setItem(row, 4, table_item((f.get("description") or "")[:60], THEME["muted"]))
+                t.setItem(row, 1, table_item(f.get("cves", "N/A"), THEME["red"]))
+                t.setItem(row, 2, table_item((f.get("sha256") or "")[:20] + "…", THEME["muted"]))
+                t.setItem(row, 3, table_item(f.get("vendor", "Unknown"), THEME["muted"]))
+                t.setItem(row, 4, table_item(tools[:50], THEME["yellow"]))
+                t.setItem(row, 5, table_item((f.get("description") or "")[:60], THEME["muted"]))
 
-    # ── PAGE: DRIVER GUARD ────────────────────────────────────────────────────
-
-    def _build_driver_guard_page(self):
-        page = QWidget()
-        layout = QVBoxLayout(page)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(0)
-        layout.addWidget(self._page_header(
-            "🛡️", "DriverGuard",
-            "Kernel driver integrity monitor — checks loaded .sys files against threat signatures"
-        ))
-
-        inner = QWidget()
-        inner_layout = QVBoxLayout(inner)
-        inner_layout.setContentsMargins(24, 20, 24, 20)
-        inner_layout.setSpacing(12)
-
-        btn_row = QHBoxLayout()
-        scan_btn = QPushButton("🛡️  Scan Drivers Now")
-        scan_btn.setObjectName("primary")
-        scan_btn.setMinimumWidth(180)
-        scan_btn.clicked.connect(self._run_driver_guard_scan)
-        btn_row.addWidget(scan_btn)
-        rt_btn = QPushButton("⏱  Start Real-Time Monitor")
-        rt_btn.clicked.connect(self._start_driver_guard_realtime)
-        btn_row.addWidget(rt_btn)
-        btn_row.addStretch()
-        inner_layout.addLayout(btn_row)
-
-        self._dg_progress = QProgressBar()
-        self._dg_progress.setRange(0, 0)
-        self._dg_progress.setVisible(False)
-        self._dg_progress.setFixedHeight(4)
-        inner_layout.addWidget(self._dg_progress)
-
-        grp = QGroupBox("Driver Guard Results")
-        grp_layout = QVBoxLayout(grp)
-        self._dg_table = make_table(["Driver", "SHA-256", "CVE / Threat", "Details"])
-        grp_layout.addWidget(self._dg_table)
-        inner_layout.addWidget(grp, 1)
-
-        layout.addWidget(inner, 1)
-        return page
-
-    def _run_driver_guard_scan(self):
-        self._dg_table.setRowCount(0)
-        self._dg_progress.setVisible(True)
-
-        def _do():
-            import os
-            findings = []
-            drv_dir = r"C:\Windows\System32\drivers"
-            if os.path.isdir(drv_dir):
-                for fname in os.listdir(drv_dir):
-                    if fname.lower().endswith(".sys"):
-                        hit = self.driver_guard.check_driver(os.path.join(drv_dir, fname))
-                        if hit:
-                            findings.append(hit)
-            return findings
-
-        worker = GenericWorker(_do)
-        worker.finished.connect(self._dg_scan_done)
-        self._workers.append(worker)
-        worker.start()
-
-    def _dg_scan_done(self, findings):
-        self._dg_progress.setVisible(False)
-        t = self._dg_table
-        t.setRowCount(0)
-        if not findings:
-            row = t.rowCount(); t.insertRow(row)
-            t.setItem(row, 0, table_item("✅  No suspicious kernel drivers detected", THEME["green"]))
-            for i in range(1, 4):
-                t.setItem(row, i, table_item(""))
-        else:
-            for f in findings:
-                row = t.rowCount(); t.insertRow(row)
-                t.setItem(row, 0, table_item(f.get("driver_name", "—")))
-                t.setItem(row, 1, table_item((f.get("sha256") or "")[:20] + "…", THEME["muted"]))
-                t.setItem(row, 2, table_item(f.get("cve", "N/A"), THEME["red"]))
-                t.setItem(row, 3, table_item((f.get("description") or "")[:80], THEME["muted"]))
-
-    def _start_driver_guard_realtime(self):
-        self.driver_guard.start_realtime_monitor()
-        from PyQt6.QtWidgets import QMessageBox
-        QMessageBox.information(self, "DriverGuard", "Real-time kernel driver monitor started.")
+    # ADD: missing handler
+    def _start_byovd_realtime(self):
+        self.byovd.start_realtime_monitor()
+        self._byovd_rt_btn.setVisible(False)
+        self._byovd_stop_btn.setVisible(True)
+        self._byovd_rt_status.setVisible(True)
+        self._status_bar.setText("🟢  BYOVD real-time monitor active")
+        self._status_bar.setStyleSheet(f"color: {THEME['green']}; padding: 4px 12px; font-size: 11px;")
+    
+    def _stop_byovd_realtime(self):
+        self.byovd.stop_realtime_monitor()
+        self._byovd_stop_btn.setVisible(False)
+        self._byovd_rt_btn.setVisible(True)
+        self._byovd_rt_btn.setEnabled(True)
+        self._byovd_rt_status.setVisible(False)
+        self._status_bar.setText("● Ready")
+        self._status_bar.setStyleSheet(f"color: {THEME['muted']}; padding: 4px 12px; font-size: 11px;")
 
     # ── PAGE: ATTACK CHAINS ───────────────────────────────────────────────────
 
@@ -4715,6 +4670,7 @@ class CyberSentinelGUI(QMainWindow):
 def main():
     app = QApplication(sys.argv)
     app.setApplicationName("CyberSentinel v1")
+    app.setWindowIcon(QIcon(os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "icon.ico")))
 
     # Dark palette
     palette = QPalette()

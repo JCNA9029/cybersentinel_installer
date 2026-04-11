@@ -21,7 +21,6 @@ from .baseline_engine   import BaselineEngine
 from .amsi_monitor      import AmsiMonitor
 from .amsi_hook         import AmsiScanner, FilelessMonitor
 from .lolbin_detector   import LolbinDetector
-from .driver_guard      import DriverGuard
 from .adaptive_learner  import AdaptiveLearner, get_learner
 from .explainability    import SHAPExplainer, get_explainer
 from .risk_scorer       import DynamicRiskScorer, get_risk_scorer

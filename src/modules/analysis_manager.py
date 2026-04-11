@@ -833,8 +833,14 @@ f"    Run: ollama create {self.llm_model} -f Modelfile"
         # ── Tier 0.5: Local cache ───────────────────────────────────────────
         cached = utils.get_cached_result(sha256)
         if cached:
-            colors.warning("[*] CACHE HIT — Bypassing API/ML engines")
-            self.session_log.append("[*] CACHE HIT")
+            verdict = cached['verdict'].upper()
+            if any(v in verdict for v in ("MALICIOUS", "CRITICAL")):
+                colors.critical(f"[*] CACHE HIT — {cached['verdict']}")
+            elif "SAFE" in verdict:
+                colors.success(f"[*] CACHE HIT — {cached['verdict']}")
+            else:
+                colors.warning(f"[*] CACHE HIT — {cached['verdict']}")
+            self.session_log.append(f"[*] CACHE HIT — {cached['verdict']}")
             self.log_event(f"    Verdict    : {cached['verdict']}")
             self.log_event(f"    Cached On  : {cached['timestamp']}")
             self.log_event(f"    Source     : {cached['source']}")

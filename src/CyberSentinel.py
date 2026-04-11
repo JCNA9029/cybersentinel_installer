@@ -15,7 +15,6 @@ from modules.baseline_engine   import BaselineEngine
 from modules.amsi_monitor      import AmsiMonitor
 from modules.amsi_hook         import AmsiScanner, FilelessMonitor
 from modules.lolbin_detector   import LolbinDetector
-from modules.driver_guard      import DriverGuard
 from modules.c2_fingerprint    import Ja3Monitor, FeodoMonitor, DgaMonitor
 from modules.intel_updater     import update_all, feed_status
 
@@ -28,9 +27,7 @@ class CyberSentinelUI:
         self.correlator   = ChainCorrelator()
         self.baseline     = BaselineEngine()
         self.amsi         = AmsiMonitor()
-        # ── Newly wired modules ────────────────────────────────────────
         self.lolbin       = LolbinDetector()
-        self.driver_guard = DriverGuard()
         self.fileless     = FilelessMonitor(correlator=self.correlator)
         self.amsi_scanner = AmsiScanner()
         self.feodo        = FeodoMonitor()
@@ -47,8 +44,8 @@ class CyberSentinelUI:
  / ___| \ | | __ )| ____|  _ \/ ___|| ____| \ | |_   _|_ _| \ | | ____| |
 | |   | \ | |  _ \|  _| | |_) \___ \|  _| |  \| | | |  | ||  \| |  _| | |
 | |___| |_| | |_) | |___|  _ < ___) | |___| |\  | | |  | || |\  | |___| |___
- \____|\__, |____/|_____|_| \_\____/|_____|_| \_| |_| |___|_| \_|_____|_____|
-       |___/   v1 — 11-Tier Detection Engine
+ \____|\ __, |____/|_____|_| \_\____/|_____|_| \_| |_| |___|_| \_|_____|_____|
+        |___/   v1 — 11-Tier Detection Engine
         """)
 
     def setup_api(self):
@@ -162,7 +159,6 @@ class CyberSentinelUI:
 
         installed = utils.ollama_list_models()
 
-        # Recommended models with RAM hints
         RECOMMENDED = {
             "deepseek-r1:8b": "~8 GB RAM — best quality reports",
             "qwen2.5:7b":     "~4.7 GB RAM — good balance",
@@ -215,7 +211,6 @@ class CyberSentinelUI:
             else:
                 colors.info(f"[*] Keeping current model: {self.logic.llm_model}")
 
-        # ── Save all ────────────────────────────────────────────────────────
         utils.save_config(
             self.logic.api_keys,
             self.logic.webhook_url,
@@ -264,7 +259,7 @@ class CyberSentinelUI:
     def _menu_chain_alerts(self):
         """Displays detected attack chains."""
         print("\n--- Attack Chain Correlation Alerts ---")
-        self.correlator.run_correlation()   # Run a fresh sweep first
+        self.correlator.run_correlation()
         self.correlator.display_chain_alerts()
 
     def _menu_baseline(self):
@@ -290,33 +285,28 @@ class CyberSentinelUI:
         self.amsi.display_fileless_alerts()
 
     def _menu_driver_guard(self):
-        """Real-time DriverGuard kernel-driver integrity check."""
-        print("\n--- DriverGuard: Kernel Driver Monitor ---")
+        """BYOVD kernel-driver integrity check — scan and real-time monitor."""
+        print("\n--- BYOVD: Kernel Driver Monitor ---")
         print("1. Scan all loaded drivers now")
         print("2. Start real-time driver monitor")
-        print("3. Cancel")
-        c = input("Select (1-3): ").strip()
+        print("3. Stop real-time driver monitor")
+        print("4. Cancel")
+        c = input("Select (1-4): ").strip()
         if c == "1":
             print("[*] Scanning System32\\drivers — please wait...")
             findings = self.byovd.scan_loaded_drivers()
-            dg_findings = []
-            import os
-            drv_dir = r"C:\Windows\System32\drivers"
-            if os.path.isdir(drv_dir):
-                for f in os.listdir(drv_dir):
-                    if f.lower().endswith(".sys"):
-                        hit = self.driver_guard.check_driver(os.path.join(drv_dir, f))
-                        if hit:
-                            dg_findings.append(hit)
-            if not dg_findings:
-                colors.success("[+] DriverGuard: No suspicious kernel drivers detected.")
+            if not findings:
+                colors.success("[+] BYOVD: No vulnerable kernel drivers detected.")
             else:
-                colors.critical(f"[!] DriverGuard: {len(dg_findings)} suspicious driver(s) found:")
-                for h in dg_findings:
-                    colors.critical(f"  ✗ {h.get('driver_name','?')} — {h.get('description','')[:80]}")
+                colors.critical(f"[!] BYOVD: {len(findings)} vulnerable driver(s) found:")
+                for f in findings:
+                    colors.critical(self.byovd.format_alert(f))
         elif c == "2":
-            self.driver_guard.start_realtime_monitor()
-            colors.success("[+] DriverGuard real-time monitor running in background.")
+            self.byovd.start_realtime_monitor()
+            colors.success("[+] BYOVD real-time monitor running in background.")
+        elif c == "3":
+            self.byovd.stop_realtime_monitor()
+            colors.success("[+] BYOVD real-time monitor stopped.")
 
     def _menu_amsi_hook(self):
         """AmsiScanner / FilelessMonitor — scan a script or process memory."""
@@ -384,7 +374,7 @@ class CyberSentinelUI:
             print("   7. Baseline Environment Manager")
             print("   8. Fileless / AMSI Alerts")
             print("  ── Advanced Detectors ─────────────")
-            print("   9. DriverGuard: Kernel Driver Monitor")
+            print("   9. BYOVD: Kernel Driver Monitor")
             print("  10. AMSI Hook / Fileless Script & Memory Scan")
             print("  ── Management ─────────────────────")
             print("  11. Network Containment Control")
