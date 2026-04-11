@@ -28,9 +28,9 @@ from typing import Optional
 
 # Resolve all data file paths relative to the project root (modules/../)
 # so they work regardless of which directory Python is launched from.
-_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-CONFIG_FILE = os.path.join(_PROJECT_ROOT, "config.json")
-DB_FILE     = os.path.join(_PROJECT_ROOT, "threat_cache.db")
+from ._paths import INSTALL_DIR as _INSTALL_DIR
+CONFIG_FILE = str(_INSTALL_DIR / "config.json")
+DB_FILE     = str(_INSTALL_DIR / "threat_cache.db")
 
 
 # ─────────────────────────────────────────────

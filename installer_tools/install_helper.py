@@ -54,7 +54,26 @@ import urllib.request
 from pathlib import Path
 
 # ── Constants ─────────────────────────────────────────────────
-INSTALL_DIR   = Path(r"C:\CyberSentinel")
+def _resolve_install_dir() -> Path:
+    """Read install dir from --install-dir CLI arg, then registry, then default."""
+    import sys
+    for i, arg in enumerate(sys.argv):
+        if arg == "--install-dir" and i + 1 < len(sys.argv):
+            return Path(sys.argv[i + 1])
+    # Registry fallback (written by Inno Setup [Registry] section)
+    try:
+        import winreg
+        key = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE,
+                             r"SOFTWARE\CyberSentinel", 0, winreg.KEY_READ)
+        val, _ = winreg.QueryValueEx(key, "InstallDir")
+        winreg.CloseKey(key)
+        if val:
+            return Path(val)
+    except Exception:
+        pass
+    return Path(r"C:\CyberSentinel")  # last-resort default
+
+INSTALL_DIR   = _resolve_install_dir()
 MODELS_DIR    = INSTALL_DIR / "models"
 CONFIG_PATH   = INSTALL_DIR / "config.json"
 LOG_PATH      = INSTALL_DIR / "install_log.txt"
@@ -468,93 +487,50 @@ def step_thrember():
 #  STEP: ollama
 # ═══════════════════════════════════════════════════════════════
 def step_npcap():
-    """
-    Downloads and silently installs Npcap — the Windows packet-capture driver
-    required by scapy for live TLS sniffing (JA3 C2 fingerprinting).
+    log("=== STEP: Npcap check ===")
 
-    Npcap is NOT a Python package, so pip cannot install it.
-    We download the official installer from npcap.com and run it silently.
-
-    Silent flags used:
-      /S           — silent mode (no GUI)
-      /winpcap_mode=yes — enables WinPcap compatibility so scapy works out-of-the-box
-      /loopback_support=yes — enables loopback adapter (useful for local testing)
-
-    Safe to re-run: if Npcap is already installed the installer exits cleanly.
-    """
-    log("=== STEP: Installing Npcap (required by scapy / JA3 monitor) ===")
-
-    NPCAP_URL      = "https://npcap.com/dist/npcap-1.79.exe"
-    NPCAP_FILENAME = "npcap_installer.exe"
-    npcap_path     = Path(tempfile.gettempdir()) / NPCAP_FILENAME
-
-    # ── Check if Npcap is already installed (registry key written by Npcap installer) ──
+    # Check if already installed
     import winreg
-    already_installed = False
-    for hive in (winreg.HKEY_LOCAL_MACHINE,):
-        for sub in (
-            r"SOFTWARE\Npcap",
-            r"SOFTWARE\WOW6432Node\Npcap",
-        ):
-            try:
-                winreg.OpenKey(hive, sub)
-                already_installed = True
-                break
-            except OSError:
-                pass
-        if already_installed:
-            break
+    for sub in (r"SOFTWARE\Npcap", r"SOFTWARE\WOW6432Node\Npcap"):
+        try:
+            winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, sub)
+            log("Npcap already installed — skipping.")
+            return
+        except OSError:
+            pass
 
-    if already_installed:
-        log("Npcap already installed — skipping download.")
-        return
-
-    # ── Download ──────────────────────────────────────────────────────────────
-    log(f"Downloading Npcap from {NPCAP_URL} ...")
+    # Not installed — write a flag file so the Inno Setup [Run] AfterInstall
+    # hook can detect this and show a user-facing warning dialog.
+    flag_path = INSTALL_DIR / "npcap_missing.flag"
     try:
-        import urllib.request
-        urllib.request.urlretrieve(NPCAP_URL, npcap_path)
-    except Exception as exc:
-        fail(
-            f"Failed to download Npcap: {exc}\n"
-            "Please install Npcap manually from https://npcap.com/#download\n"
-            "then re-run the installer, or install scapy and Npcap yourself\n"
-            "if you want to use the JA3 TLS fingerprint monitor."
+        flag_path.write_text(
+            "Npcap was not found during installation.\n"
+            "The JA3 TLS fingerprint monitor will be disabled until Npcap is installed.\n"
+            "Download from: https://npcap.com/#download",
+            encoding="utf-8"
         )
+        log("Npcap not found — flag file written for installer notification.")
+    except Exception as e:
+        log(f"WARNING: Could not write npcap_missing.flag: {e}", "WARN")
 
-    # ── Silent install ────────────────────────────────────────────────────────
-    log("Installing Npcap silently (this requires Administrator privileges)...")
-    result = subprocess.run(
-        [
-            str(npcap_path),
-            "/S",                       # silent — no GUI
-            "/winpcap_mode=yes",        # WinPcap compatibility (needed by scapy)
-            "/loopback_support=yes",    # loopback adapter for local testing
-        ],
-        capture_output=True,
+    log(
+        "WARNING: Npcap is not installed. "
+        "The JA3 TLS fingerprint monitor will be disabled at runtime. "
+        "To enable it, install Npcap manually from https://npcap.com/#download"
     )
-
-    # Npcap installer returns 0 on success; 1 if a reboot is needed (still OK).
-    if result.returncode not in (0, 1):
-        fail(
-            f"Npcap installer exited with code {result.returncode}.\n"
-            "Please install Npcap manually from https://npcap.com/#download"
-        )
-
-    if result.returncode == 1:
-        log("Npcap installed — a system reboot may be required for the driver to activate.")
-    else:
-        log("Npcap installed successfully.")
-
-    # Tidy up temp file
-    try:
-        npcap_path.unlink()
-    except OSError:
-        pass
-
 
 def step_ollama():
     log("=== STEP: Installing Ollama ===")
+
+    # ── Skip if Ollama is already installed ──────────────────────────────────
+    # find_ollama_exe() probes all known install locations before falling back
+    # to PATH. If it returns anything other than the bare "ollama" fallback,
+    # or if shutil.which finds it on PATH, Ollama is already present.
+    ollama_exe = find_ollama_exe()
+    if ollama_exe != "ollama" or shutil.which("ollama"):
+        log(f"Ollama already installed at: {ollama_exe} — skipping download.")
+        return
+    
     installer = Path(tempfile.gettempdir()) / "OllamaSetup.exe"
 
     if not download(OLLAMA_INSTALLER_URL, installer, attempts=3):
@@ -596,6 +572,17 @@ def step_ollama():
 def step_models():
     log("=== STEP: Downloading AI models from Google Drive ===")
     MODELS_DIR.mkdir(parents=True, exist_ok=True)
+
+    # ── Skip if models already exist ─────────────────────────────────────────
+    # Check for both the GGUF and the LightGBM model. If both are present and
+    # non-empty, there is no need to re-download 4.5 GB from Google Drive.
+    gguf_file  = MODELS_DIR / "CyberSentinel-Analyst.gguf"
+    lgbm_file  = MODELS_DIR / "CyberSentinel_v2.model"
+
+    if gguf_file.exists() and gguf_file.stat().st_size > 0 \
+       and lgbm_file.exists() and lgbm_file.stat().st_size > 0:
+        log("AI models already present — skipping download.")
+        return
 
     # gdown is already installed by step_deps; no need to re-install here.
     url = f"https://drive.google.com/drive/folders/{GDRIVE_FOLDER}"
@@ -663,6 +650,11 @@ def main():
         choices=["deps", "thrember", "npcap", "ollama", "models", "configure"],
         required=True,
         help="Installation step to execute",
+    )
+    parser.add_argument(
+        "--install-dir",
+        default=None,
+        help="CyberSentinel install directory (overrides registry and default)",
     )
     args = parser.parse_args()
 

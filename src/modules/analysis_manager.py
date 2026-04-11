@@ -117,7 +117,7 @@ class ScannerLogic:
         self.webhook_url   = config.get("webhook_url", "")
         # Model is hardcoded — CyberSentinel uses its own fine-tuned domain analyst.
         # Do NOT make this configurable; the model is purpose-built for this pipeline.
-        self.llm_model     = "cybersentinel2"
+        self.llm_model = config.get("llm_model", "cybersentinel-analyst")
         self.ml_scanner    = LocalScanner()
         self.session_log: list[str] = []
         self.headless_mode = False
@@ -511,8 +511,8 @@ class ScannerLogic:
             status = getattr(resp, "status_code", "?")
             if status == 404:
                 return (
-                    "[-] Model 'cybersentinel2' not found in Ollama.\n"
-                    "    Run: ollama create cybersentinel2 -f Modelfile"
+f"[-] Model '{self.llm_model}' not found in Ollama.\n"
+f"    Run: ollama create {self.llm_model} -f Modelfile"
                 )
             return f"[-] Ollama API error ({status}): {e}"
         except (KeyError, ValueError) as e:
@@ -713,34 +713,11 @@ class ScannerLogic:
         file_size_mb: float,
         ml_result: dict,
     ):
-        """Orchestrates Stage 2 classification and LLM reporting for ML-detected threats.
+        """Orchestrates LLM reporting for ML-detected threats.
         Supports three modes: headless (auto), GUI (callbacks), CLI (input()).
         """
         fam_name = "Unknown"
         features = ml_result.get("features")
-        gui = getattr(self, "gui_callbacks", None)
-
-        # Stage 2 family classification
-        if self.headless_mode:
-            run_stage2 = True
-        elif gui:
-            run_stage2 = gui["ask"](
-                "CRITICAL RISK detected by ML engine.\n\n"
-                "Run Stage 2 malware family classification?\n"
-                "(Uses local model — no internet required)"
-            )
-        else:
-            run_stage2 = input("\n[?] Run Stage 2 family analysis? (Y/N): ").strip().lower() == "y"
-
-        if run_stage2 and features is not None:
-            self.log_event("[*] Running Stage 2 classification...")
-            fam_result = self.ml_scanner.scan_stage2(features)
-            if fam_result:
-                fam_name = fam_result.get("family_name", "Unknown")
-                conf = fam_result.get("family_confidence", 0.0)
-                self.log_event(f"[*] STAGE 2: {fam_name} ({conf:.2%} confidence)")
-        else:
-            self.log_event("[*] Stage 2 skipped.")
 
         # Scenario 3 Fix (Path B):
         # The ML engine already extracted the feature vector during scan_stage1().
@@ -761,6 +738,9 @@ class ScannerLogic:
         # Release the feature array immediately to prevent memory growth in long-running daemon mode.
         if features is not None:
             del ml_result["features"]
+    
+        # Resolve GUI callbacks — mirrors the pattern in scan_file() and _prompt_quarantine()
+        gui = getattr(self, "gui_callbacks", None)
 
         # AI Analyst report
         if self.headless_mode:

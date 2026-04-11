@@ -17,7 +17,26 @@ import time
 from pathlib import Path
 
 # ── Paths ─────────────────────────────────────────────────────
-INSTALL_DIR   = Path(r"C:\CyberSentinel")
+def _resolve_install_dir() -> Path:
+    # 1. Registry — written by Inno Setup, always correct
+    try:
+        import winreg
+        key = winreg.OpenKey(
+            winreg.HKEY_LOCAL_MACHINE,
+            r"SOFTWARE\CyberSentinel",
+            0, winreg.KEY_READ,
+        )
+        val, _ = winreg.QueryValueEx(key, "InstallDir")
+        winreg.CloseKey(key)
+        candidate = Path(val)
+        if candidate.is_dir():
+            return candidate
+    except Exception:
+        pass
+    # 2. Script-relative fallback — installer_tools/ is one level below root
+    return Path(__file__).resolve().parent.parent
+
+INSTALL_DIR   = _resolve_install_dir()
 MODELS_DIR    = INSTALL_DIR / "models"
 GGUF_FILE     = MODELS_DIR / "CyberSentinel-Analyst.gguf"
 MODELFILE     = INSTALL_DIR / "Modelfile"
@@ -54,16 +73,25 @@ SYSTEM_PROMPT = (
     'Map accurately (e.g., T1082 for Discovery, T1112 for Registry, T1105 for Staging). '
     'Explain the LOGICAL CHAIN (how API A enables API B). '
     'YARA rules MUST include hexadecimal sequences or specific non-standard strings. '
-    'Tone: Cold, analytical, and highly technical.'
+    'Tone: Cold, analytical, and highly technical. '
+    'ALWAYS structure your report as: '
+    '1. Executive Summary (2-3 sentences). '
+    '2. Behavioral Analysis (API chain with MITRE mapping). '
+    '3. Indicators of Compromise. '
+    '4. YARA Rule. '
+    '5. Recommended Response Actions.'
 )
 
 MODELFILE_CONTENT = f"""\
 FROM {GGUF_FILE}
 SYSTEM \"\"\"{SYSTEM_PROMPT}\"\"\"
-PARAMETER temperature 0.1
-PARAMETER num_ctx     4096
-PARAMETER stop        "<|im_end|>"
-PARAMETER stop        "<|endoftext|>"
+PARAMETER temperature    0.1
+PARAMETER num_ctx        8192
+PARAMETER num_gpu        999
+PARAMETER num_predict    2048
+PARAMETER repeat_penalty 1.1
+PARAMETER stop           "<|im_end|>"
+PARAMETER stop           "<|endoftext|>"
 """
 
 
@@ -171,7 +199,13 @@ def verify_model():
             "The model import may have failed silently.",
             "WARN"
         )
-
+def _model_already_registered() -> bool:
+    """Return True if the model already exists in Ollama."""
+    result = subprocess.run(
+        [find_ollama_exe(), "list"],
+        capture_output=True, text=True, encoding="utf-8"
+    )
+    return MODEL_NAME in result.stdout
 
 def main():
     INSTALL_DIR.mkdir(parents=True, exist_ok=True)
@@ -179,6 +213,12 @@ def main():
     log("create_modelfile.py — CyberSentinel LLM import")
     log("=" * 60)
 
+    # Model Check
+    if _model_already_registered():
+        log(f"Model '{MODEL_NAME}' already exists in Ollama — skipping import.")
+        patch_config()
+        return
+    
     # Sanity check
     if not GGUF_FILE.exists():
         fail(

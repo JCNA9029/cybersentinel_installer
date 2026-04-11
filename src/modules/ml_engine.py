@@ -5,7 +5,6 @@
 # Responsibilities:
 #   - Extracts 2,381-dimensional PE feature vectors using the EMBER2024 thrember library
 #   - Runs Stage 1 binary classification (malicious / safe) via LightGBM
-#   - Runs Stage 2 malware family classification on confirmed threats
 #   - Parses the Import Address Table (IAT) for high-risk Windows API calls
 #   - Checks for the adaptive learner reload flag before each scan
 #
@@ -18,7 +17,6 @@
 #     no size restriction applies there).
 #   - Non-PE files (missing MZ magic bytes) are rejected before feature extraction
 
-import json
 import os
 import numpy as np
 import pefile
@@ -26,6 +24,7 @@ import lightgbm as lgb
 from .loading import Spinner
 from . import utils
 from pathlib import Path
+from ._paths import MODELS_DIR
 
 try:
     import thrember
@@ -34,38 +33,21 @@ except ImportError:
     _THREMBER_AVAILABLE = False
     print("[!] Warning: 'thrember' library not found. Local ML scanning will be unavailable.")
 
-_BASE_DIR = Path(__file__).resolve().parent.parent  # goes up from modules/ to C:\CyberSentinel\
-
 class LocalScanner:
     def __init__(
         self,
-        all_model_path: str = str(_BASE_DIR / "models" / "CyberSentinel_v2.model"),
-        family_model_path: str = str(_BASE_DIR / "models" / "EMBER2024_family.model"),
-        labels_path: str = str(_BASE_DIR / "models" / "family_labels.json"),
+        all_model_path: str = str(MODELS_DIR / "CyberSentinel_v2.model"),
         threshold: float = 0.6,
     ):
         self.all_model_path = all_model_path
-        self.family_model_path = family_model_path
-        self.labels_path = labels_path
         # Optimised v1 threshold (0.6) targets 0.00% FPR on LotL binaries
         self.threshold = threshold
 
         self.all_model = None
-        self.family_model = None
-        self.family_labels = self._load_labels()
 
     # ─────────────────────────────────────────────
     #  MODEL LOADING
     # ─────────────────────────────────────────────
-
-    def _load_labels(self) -> dict | None:
-        if not os.path.exists(self.labels_path):
-            return None
-        try:
-            with open(self.labels_path, "r") as f:
-                return json.load(f)
-        except Exception:
-            return None
 
     def _load_model(self, path: str) -> lgb.Booster | None:
         if not os.path.exists(path):
@@ -335,30 +317,4 @@ class LocalScanner:
             print(f"[-] ML inference failed: {e}")
             return None
 
-    def scan_stage2(self, features: np.ndarray) -> dict | None:
-        """
-        Stage 2: deep malware family classification.
-        Caller is responsible for del-ing the features array afterwards.
-        """
-        if self.family_model is None:
-            print("[*] Loading malware family database...")
-            self.family_model = self._load_model(self.family_model_path)
 
-        if self.family_model is None:
-            return None
-
-        try:
-            family_probs = self.family_model.predict(features)[0]
-            best_id = int(np.argmax(family_probs))
-
-            fam_name = f"Family ID #{best_id}"
-            if self.family_labels and isinstance(self.family_labels, dict):
-                fam_name = self.family_labels.get(str(best_id), fam_name)
-
-            return {
-                "family_name": fam_name,
-                "family_confidence": float(family_probs[best_id]),
-            }
-        except Exception as e:
-            print(f"[-] Stage 2 classification failed: {e}")
-            return None

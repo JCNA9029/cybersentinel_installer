@@ -44,10 +44,10 @@ from .loading import Spinner
 #  CONSTANTS
 # ─────────────────────────────────────────────────────────────────────────────
 
-_PROJECT_ROOT  = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-MODEL_PATH     = os.path.join(_PROJECT_ROOT, "models", "CyberSentinel_v2.model")
-BACKUP_DIR     = os.path.join(_PROJECT_ROOT, "models", "backups")
-AUDIT_LOG_PATH = os.path.join(_PROJECT_ROOT, "models", "learning_audit.jsonl")
+from ._paths import MODELS_DIR as _MODELS_DIR
+MODEL_PATH     = str(_MODELS_DIR / "CyberSentinel_v2.model")
+BACKUP_DIR     = str(_MODELS_DIR / "backups")
+AUDIT_LOG_PATH = str(_MODELS_DIR / "learning_audit.jsonl")
 
 AUTO_RETRAIN_THRESHOLD = 5
 LEARNING_RATE  = 0.05
@@ -1470,7 +1470,7 @@ class AdaptiveLearner:
 #  MODEL RELOAD FLAG
 # ─────────────────────────────────────────────────────────────────────────────
 
-_RELOAD_FLAG = os.path.join(_PROJECT_ROOT, "models", ".model_updated")
+_RELOAD_FLAG = str(_MODELS_DIR / ".model_updated")
 
 
 def _set_model_reload_flag():

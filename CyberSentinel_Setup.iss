@@ -26,6 +26,7 @@ LicenseFile=LICENSE.txt
 OutputBaseFilename=CyberSentinel_Setup
 Compression=lzma2/ultra64
 SolidCompression=yes
+WindowVisible=yes
 WizardStyle=modern
 WizardResizable=no
 WizardSizePercent=120
@@ -50,6 +51,7 @@ english.EnsuringPip=Ensuring pip is available...
 english.InstallingDeps=Installing Python dependencies...
 english.InstallingThrember=Installing EMBER2024 (thrember)...
 english.InstallingNpcap=Installing Npcap packet-capture driver (required for JA3 TLS monitor)...
+english.NpcapMissing=Npcap was not installed on your system.%n%nThe JA3 TLS fingerprint monitor (which detects C2 beaconing via TLS fingerprints) will be disabled until Npcap is installed.%n%nTo enable it later, download and install Npcap from:%nhttps://npcap.com/#download%n%nEverything else in CyberSentinel works without Npcap.
 english.InstallingOllama=Installing Ollama...
 english.DownloadingModels=Downloading AI models (~4.5 GB) — please wait, this may take several minutes...
 english.ImportingLLM=Importing CyberSentinel AI Analyst model into Ollama...
@@ -73,7 +75,7 @@ Name: "startonboot";    Description: "Start Ollama automatically on &login"; Gro
 
 [Files]
 ; ── Application source tree ──────────────────────────────────
-Source: "src\*"; DestDir: "{app}"; Flags: recursesubdirs createallsubdirs ignoreversion; Components: core
+Source: "src\*"; DestDir: "{app}"; Flags: recursesubdirs createallsubdirs ignoreversion; Excludes: "__pycache__,*.pyc,*.pyo"; Components: core
 
 ; ── Installer helper scripts ─────────────────────────────────
 Source: "installer_tools\install_helper.py";   DestDir: "{app}\installer_tools"; Components: core
@@ -102,14 +104,14 @@ Name: "{group}\Uninstall CyberSentinel";  Filename: "{uninstallexe}"; Tasks: sta
 ; {reg:...} ensures we use the exact Python that was pinned to the registry
 ; during PrepareToInstall — never relies on whatever is first on PATH.
 Filename: "{reg:HKLM\SOFTWARE\{#MyAppName},PythonExe|python.exe}"; \
-  Parameters: """{app}\installer_tools\install_helper.py"" --step deps"; \
+  Parameters: """{app}\installer_tools\install_helper.py"" --step deps --install-dir ""{app}"""; \
   StatusMsg: "{cm:InstallingDeps}"; \
   WorkingDir: "{app}"; \
   Flags: runhidden waituntilterminated; \
   BeforeInstall: SetStep('Installing Python dependencies (this may take 3–5 minutes)...')
 
 Filename: "{reg:HKLM\SOFTWARE\{#MyAppName},PythonExe|python.exe}"; \
-  Parameters: """{app}\installer_tools\install_helper.py"" --step thrember"; \
+  Parameters: """{app}\installer_tools\install_helper.py"" --step thrember --install-dir ""{app}"""; \
   StatusMsg: "{cm:InstallingThrember}"; \
   WorkingDir: "{app}"; \
   Flags: runhidden waituntilterminated; \
@@ -122,7 +124,7 @@ Filename: "{reg:HKLM\SOFTWARE\{#MyAppName},PythonExe|python.exe}"; \
 ; install_helper.py::step_npcap() checks the registry before downloading,
 ; so this is safe to re-run and won't reinstall if Npcap is already present.
 Filename: "{reg:HKLM\SOFTWARE\{#MyAppName},PythonExe|python.exe}"; \
-  Parameters: """{app}\installer_tools\install_helper.py"" --step npcap"; \
+  Parameters: """{app}\installer_tools\install_helper.py"" --step npcap --install-dir ""{app}"""; \
   StatusMsg: "{cm:InstallingNpcap}"; \
   WorkingDir: "{app}"; \
   Flags: runhidden waituntilterminated; \
@@ -130,7 +132,7 @@ Filename: "{reg:HKLM\SOFTWARE\{#MyAppName},PythonExe|python.exe}"; \
 
 ; ── Step 4: Ollama ───────────────────────────────────────────
 Filename: "{reg:HKLM\SOFTWARE\{#MyAppName},PythonExe|python.exe}"; \
-  Parameters: """{app}\installer_tools\install_helper.py"" --step ollama"; \
+  Parameters: """{app}\installer_tools\install_helper.py"" --step ollama --install-dir ""{app}"""; \
   StatusMsg: "{cm:InstallingOllama}"; \
   WorkingDir: "{app}"; \
   Flags: runhidden waituntilterminated; \
@@ -138,7 +140,7 @@ Filename: "{reg:HKLM\SOFTWARE\{#MyAppName},PythonExe|python.exe}"; \
 
 ; ── Step 7: Download models from Google Drive ────────────────
 Filename: "{reg:HKLM\SOFTWARE\{#MyAppName},PythonExe|python.exe}"; \
-  Parameters: """{app}\installer_tools\install_helper.py"" --step models"; \
+  Parameters: """{app}\installer_tools\install_helper.py"" --step models --install-dir ""{app}"""; \
   StatusMsg: "{cm:DownloadingModels}"; \
   WorkingDir: "{app}"; \
   Flags: runhidden waituntilterminated; \
@@ -156,7 +158,7 @@ Filename: "{reg:HKLM\SOFTWARE\{#MyAppName},PythonExe|python.exe}"; \
 
 ; ── Step 6 & 8: Patch config + register Ollama boot task ─────
 Filename: "{reg:HKLM\SOFTWARE\{#MyAppName},PythonExe|python.exe}"; \
-  Parameters: """{app}\installer_tools\install_helper.py"" --step configure"; \
+  Parameters: """{app}\installer_tools\install_helper.py"" --step configure --install-dir ""{app}"""; \
   StatusMsg: "{cm:ConfiguringApp}"; \
   WorkingDir: "{app}"; \
   Flags: runhidden waituntilterminated; \
@@ -204,6 +206,16 @@ Root: HKLM; Subkey: "SOFTWARE\{#MyAppName}"; ValueType: none; ValueName: "Python
 var
   PythonExePath: String;  // Set by ResolvePythonPath; used by all [Run] steps
   InstallStep:   Integer; // Tracks current step for progress bar (0-based)
+  NpcapMissing:  Boolean; // Set in ssPostInstall if npcap_missing.flag exists
+  const
+  GWL_STYLE     = -16;
+  WS_MINIMIZEBOX = $00020000;
+
+function GetWindowLong(hWnd: HWND; nIndex: Integer): LongInt;
+  external 'GetWindowLongW@user32.dll stdcall';
+
+function SetWindowLong(hWnd: HWND; nIndex: Integer; dwNewLong: LongInt): LongInt;
+  external 'SetWindowLongW@user32.dll stdcall';
 
 // ── Update the built-in installation progress gauge ──────────
 // WizardForm.ProgressGauge is the actual progress bar on the
@@ -218,6 +230,16 @@ begin
   if WizardForm.ProgressGauge.Max > 0 then
     WizardForm.ProgressGauge.Position :=
       InstallStep * (WizardForm.ProgressGauge.Max div 10);
+end;
+
+procedure InitializeWizard();
+begin
+  // Enable minimize button on the installer window
+  SetWindowLong(
+    WizardForm.Handle,
+    GWL_STYLE,
+    GetWindowLong(WizardForm.Handle, GWL_STYLE) or WS_MINIMIZEBOX
+  );
 end;
 
 // ── Read a file written by a Python script into a String ─────
@@ -285,6 +307,32 @@ begin
     Result   := (MajorVer = 3) and (MinorVer >= 10);
   end else
     Result := False;
+end;
+
+function ShouldAbortInstallation: Boolean;
+begin
+  Result := False;
+end;
+
+procedure CancelButtonClick(CurPageID: Integer; var Cancel, Confirm: Boolean);
+begin
+  if CurPageID = wpInstalling then
+  begin
+    if MsgBox(
+      'Download is still in progress.' + #13#10 +
+      'Cancelling now will leave CyberSentinel incomplete.' + #13#10 + #13#10 +
+      'Are you sure you want to cancel?',
+      mbConfirmation, MB_YESNO) = IDYES then
+    begin
+      Cancel  := True;
+      Confirm := False;   // suppress the second default confirm dialog
+    end
+    else
+    begin
+      Cancel  := False;
+      Confirm := False;
+    end;
+  end;
 end;
 
 // ── Download a file using PowerShell ─────────────────────────
@@ -467,6 +515,25 @@ begin
     if FileExists(BackupPath) then begin
       DeleteFile(ConfigPath);
       RenameFile(BackupPath, ConfigPath);
+    end;
+
+    // ── Npcap missing warning ─────────────────────────────────────────────
+    // install_helper.py::step_npcap() writes this flag when Npcap is absent.
+    // We show a non-blocking informational popup so the user knows JA3
+    // fingerprinting is disabled and how to enable it.
+    if FileExists(ExpandConstant('{app}\npcap_missing.flag')) then begin
+      DeleteFile(ExpandConstant('{app}\npcap_missing.flag'));
+      MsgBox(
+        'Npcap was not installed.' + #13#10 + #13#10 +
+        'CyberSentinel has been installed successfully, but the JA3 TLS ' +
+        'fingerprint monitor requires Npcap to capture network packets.' + #13#10 + #13#10 +
+        'To enable it:' + #13#10 +
+        '  1. Download Npcap from https://npcap.com/#download' + #13#10 +
+        '  2. Run the installer and restart CyberSentinel.' + #13#10 + #13#10 +
+        'All other features (file scanning, ML engine, AI analyst, ' +
+        'cloud APIs) work normally without Npcap.',
+        mbInformation, MB_OK
+      );
     end;
   end;
 end;

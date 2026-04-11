@@ -649,6 +649,8 @@ class CyberSentinelGUI(QMainWindow):
         except ImportError as e:
             self._backend_ok = False
             self._import_error = str(e)
+            import traceback
+            traceback.print_exc()  # ADD THIS LINE
 
         self._build_ui()
 
