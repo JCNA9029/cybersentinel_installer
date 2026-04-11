@@ -96,25 +96,11 @@ Name: "{group}\CyberSentinel Dashboard";  Filename: "cmd.exe"; Parameters: "/k "
 Name: "{group}\Uninstall CyberSentinel";  Filename: "{uninstallexe}"; Tasks: startmenuicon
 
 [Run]
-; ── Step 1: Check / install Python 3.12 ──────────────────────
-Filename: "{#MyInstallDir}\installer_tools\check_python.bat"; \
-  StatusMsg: "{cm:CheckingPython}"; \
-  Flags: runhidden waituntilterminated; \
-  BeforeInstall: SetStep('Checking Python 3.12...')
-
-; ── Step 1b: Bootstrap pip if missing ────────────────────────
-; Runs ensurepip so that even a minimal Python install has pip
-; before any package installation is attempted.
-Filename: "{reg:HKLM\SOFTWARE\{#MyAppName},PythonExe|python.exe}"; \
-  Parameters: "-m ensurepip --upgrade"; \
-  StatusMsg: "{cm:EnsuringPip}"; \
-  WorkingDir: "{#MyInstallDir}"; \
-  Flags: runhidden waituntilterminated; \
-  BeforeInstall: SetStep('Ensuring pip is available...')
-
 ; ── Step 2 & 3: pip deps + thrember ──────────────────────────
-; {reg:...} ensures we use the exact Python that was installed/detected,
-; not whatever 'python.exe' happens to be first on the user's PATH.
+; Python 3.12 is already installed and verified in PrepareToInstall.
+; pip bootstrap is handled inside install_helper --step deps (_ensure_pip).
+; {reg:...} ensures we use the exact Python that was pinned to the registry
+; during PrepareToInstall — never relies on whatever is first on PATH.
 Filename: "{reg:HKLM\SOFTWARE\{#MyAppName},PythonExe|python.exe}"; \
   Parameters: """{#MyInstallDir}\installer_tools\install_helper.py"" --step deps"; \
   StatusMsg: "{cm:InstallingDeps}"; \
@@ -212,6 +198,23 @@ var
   CurrentStep:   String;
   PythonExePath: String;  // Resolved after Python install — used by all [Run] steps and shortcuts
 
+// Reads the first line of a text file into OutStr; returns True on success.
+function ReadFileToStr(const FileName: String; var OutStr: String): Boolean;
+var
+  F: Integer;
+  Buf: AnsiString;
+begin
+  Result := False;
+  OutStr := '';
+  F := FileOpen(FileName, fmOpenRead);
+  if F = -1 then Exit;
+  SetLength(Buf, 32767);
+  SetLength(Buf, FileRead(F, Buf[1], 32767));
+  FileClose(F);
+  OutStr := Trim(String(Buf));
+  Result := True;
+end;
+
 // Called from [Run] BeforeInstall to update the visible label
 procedure SetStep(const Msg: String);
 begin
@@ -231,15 +234,26 @@ begin
   );
 end;
 
-// ── Python 3.12 detection & silent download ──────────────────
+// ── Python 3.12 detection — runs BEFORE files are installed ─────────────────
+// check_python.bat is not on disk yet at PrepareToInstall time ([Files] hasn't
+// run yet), so we ask Python directly and parse the version ourselves.
 function PythonInstalled: Boolean;
 var
+  TmpFile:    String;
+  VerStr:     String;
   ResultCode: Integer;
 begin
-  // Try running check_python.bat (returns 0 if Python 3.12 found)
-  Result := Exec(ExpandConstant('{#MyInstallDir}\installer_tools\check_python.bat'),
-                 '', '', SW_HIDE, ewWaitUntilTerminated, ResultCode)
-             and (ResultCode = 0);
+  Result  := False;
+  TmpFile := ExpandConstant('{tmp}\py_ver_check.txt');
+  Exec('cmd.exe',
+    '/c python -c "import sys; open(r\"' + TmpFile +
+    '\",\"w\").write(\".\".join(map(str,sys.version_info[:2])))"',
+    '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  if FileExists(TmpFile) then begin
+    ReadFileToStr(TmpFile, VerStr);
+    DeleteFile(TmpFile);
+    Result := (VerStr = '3.12');
+  end;
 end;
 
 function DownloadFile(const URL, Dest: String): Boolean;
@@ -255,46 +269,70 @@ end;
 // ── Resolve the exact Python 3.12 executable path ────────────
 // Writes result into PythonExePath and saves it to the registry
 // so [Icons] shortcuts and any external tool can read it later.
+//
+// On a clean PC, a freshly-installed Python 3.12 is NOT yet on the
+// current process's PATH (we inherited the old PATH before Python
+// was installed). So we probe known install locations FIRST, then
+// try PATH as a fallback, not the other way around.
 procedure ResolvePythonPath;
 var
   PathTxtFile: String;
   Candidate:   String;
   ResultCode:  Integer;
+  VerCheck:    String;
 begin
   PythonExePath := '';
-  PathTxtFile   := ExpandConstant('{#MyInstallDir}\python_path.txt');
 
-  // Ask the live Python interpreter to report its own executable path.
-  // This is the only reliable way — registry/PATH probing breaks when
-  // multiple Python versions are installed side-by-side.
-  Exec('cmd.exe',
-    '/c python -c "import sys; open(r''' + PathTxtFile + ''',''w'').write(sys.executable)"',
-    '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
-
-  if FileExists(PathTxtFile) then begin
-    LoadStringFromFile(PathTxtFile, PythonExePath);
-    PythonExePath := Trim(PythonExePath);
-    DeleteFile(PathTxtFile);   // tidy up temp file
-  end;
-
-  // Belt-and-suspenders: if the above produced nothing, try known install
-  // locations for Python 3.12 (system-wide then per-user).
-  if PythonExePath = '' then begin
-    for Candidate in [
-      'C:\Program Files\Python312\python.exe',
-      'C:\Python312\python.exe',
-      ExpandConstant('{localappdata}\Programs\Python\Python312\python.exe')
-    ] do begin
-      if FileExists(Candidate) then begin
-        PythonExePath := Candidate;
-        Break;
-      end;
+  // ── 1. Probe all known Python 3.12 install locations first ───────────────
+  // These are written by the Python 3.12 installer regardless of PATH state.
+  for Candidate in [
+    'C:\Program Files\Python312\python.exe',
+    'C:\Python312\python.exe',
+    ExpandConstant('{localappdata}\Programs\Python\Python312\python.exe'),
+    ExpandConstant('{localappdata}\Programs\Python\Python3\python.exe')
+  ] do begin
+    if FileExists(Candidate) then begin
+      PythonExePath := Candidate;
+      Break;
     end;
   end;
 
-  // Last resort fallback — plain 'python.exe' on PATH.
-  if PythonExePath = '' then
+  // ── 2. If a known path was found, verify it really is 3.12 ───────────────
+  if PythonExePath <> '' then begin
+    PathTxtFile := ExpandConstant('{tmp}\py_ver_resolve.txt');
+    Exec('cmd.exe',
+      '/c "' + PythonExePath + '" -c "import sys; open(r\"' + PathTxtFile +
+      '\",\"w\").write(\".\".join(map(str,sys.version_info[:2])))"',
+      '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+    if FileExists(PathTxtFile) then begin
+      ReadFileToStr(PathTxtFile, VerCheck);
+      DeleteFile(PathTxtFile);
+      if VerCheck <> '3.12' then
+        PythonExePath := '';   // found file but wrong version; keep searching
+    end else
+      PythonExePath := '';     // couldn't run it
+  end;
+
+  // ── 3. Fallback: ask whatever 'python' is on PATH ────────────────────────
+  // This covers the case where the user had Python 3.12 already installed
+  // before running the installer (PATH was inherited correctly).
+  if PythonExePath = '' then begin
+    PathTxtFile := ExpandConstant('{tmp}\py_path_resolve.txt');
+    Exec('cmd.exe',
+      '/c python -c "import sys; open(r\"' + PathTxtFile +
+      '\",\"w\").write(sys.executable)"',
+      '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+    if FileExists(PathTxtFile) then begin
+      ReadFileToStr(PathTxtFile, PythonExePath);
+      DeleteFile(PathTxtFile);
+    end;
+  end;
+
+  // ── 4. Last resort — bare 'python.exe' and hope for the best ─────────────
+  if PythonExePath = '' then begin
+    Log('WARNING: Could not locate python.exe; falling back to bare python.exe on PATH.');
     PythonExePath := 'python.exe';
+  end;
 
   // Persist to registry so shortcuts survive PATH changes after install.
   RegWriteStringValue(HKLM, 'SOFTWARE\{#MyAppName}', 'PythonExe', PythonExePath);

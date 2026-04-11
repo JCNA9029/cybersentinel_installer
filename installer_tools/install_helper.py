@@ -226,15 +226,10 @@ def step_deps():
     _register_python_path()                        # pin this interpreter in registry
     _ensure_pip()                                  # guarantee pip exists before any install
     pip("--upgrade", "pip", "setuptools", "wheel")
-    # Install in chunks to surface individual failures clearly
+    # Install each dependency individually so failures name the exact package.
+    # pip() already calls fail() with full output on non-zero exit; no need to re-wrap.
     for pkg in PYTHON_DEPS:
-        try:
-            pip(pkg)
-        except SystemExit:
-            fail(
-                f"Failed to install '{pkg}'.  "
-                "Check your internet connection or proxy settings and re-run the installer."
-            )
+        pip(pkg)
     log("All Python dependencies installed successfully.")
 
 
@@ -315,7 +310,6 @@ def _find_local_ember2024() -> Path | None:
         home / "Documents",
         home,
         Path("C:/"),
-        Path("C:/Users"),
     ]
 
     # Common folder names the user might have used
@@ -565,8 +559,7 @@ def step_models():
     log("=== STEP: Downloading AI models from Google Drive ===")
     MODELS_DIR.mkdir(parents=True, exist_ok=True)
 
-    pip("gdown")
-
+    # gdown is already installed by step_deps; no need to re-install here.
     url = f"https://drive.google.com/drive/folders/{GDRIVE_FOLDER}"
 
     for attempt in range(1, 4):
@@ -629,7 +622,7 @@ def main():
     parser = argparse.ArgumentParser(description="CyberSentinel installer helper")
     parser.add_argument(
         "--step",
-        choices=["deps", "thrember", "ollama", "models", "configure"],
+        choices=["deps", "thrember", "npcap", "ollama", "models", "configure"],
         required=True,
         help="Installation step to execute",
     )
