@@ -303,23 +303,35 @@ begin
 
   // ── 1. Probe all known Python 3.12 install locations first ───────────────
   // Covers both system-wide (InstallAllUsers=1) and per-user installs.
-  for Candidate in [
-    'C:\Program Files\Python312\python.exe',
-    'C:\Python312\python.exe',
-    ExpandConstant('{localappdata}\Programs\Python\Python312\python.exe')
-  ] do begin
-    if FileExists(Candidate) then begin
-      if FileExists(OutFile) then DeleteFile(OutFile);
-      Exec(Candidate, '"' + ScriptFile + '"',
-        '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
-      if FileExists(OutFile) then begin
-        ReadFileToStr(OutFile, VerCheck);
-        DeleteFile(OutFile);
-        if VerCheck = '3.12' then begin
-          PythonExePath := Candidate;
-          Break;
-        end;
-      end;
+  // RemObjects Pascal Script does not support "for X in [array]" syntax,
+  // so we check each candidate path explicitly.
+  Candidate := 'C:\Program Files\Python312\python.exe';
+  if (PythonExePath = '') and FileExists(Candidate) then begin
+    if FileExists(OutFile) then DeleteFile(OutFile);
+    Exec(Candidate, '"' + ScriptFile + '"', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+    if FileExists(OutFile) then begin
+      ReadFileToStr(OutFile, VerCheck); DeleteFile(OutFile);
+      if VerCheck = '3.12' then PythonExePath := Candidate;
+    end;
+  end;
+
+  Candidate := 'C:\Python312\python.exe';
+  if (PythonExePath = '') and FileExists(Candidate) then begin
+    if FileExists(OutFile) then DeleteFile(OutFile);
+    Exec(Candidate, '"' + ScriptFile + '"', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+    if FileExists(OutFile) then begin
+      ReadFileToStr(OutFile, VerCheck); DeleteFile(OutFile);
+      if VerCheck = '3.12' then PythonExePath := Candidate;
+    end;
+  end;
+
+  Candidate := ExpandConstant('{localappdata}\Programs\Python\Python312\python.exe');
+  if (PythonExePath = '') and FileExists(Candidate) then begin
+    if FileExists(OutFile) then DeleteFile(OutFile);
+    Exec(Candidate, '"' + ScriptFile + '"', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+    if FileExists(OutFile) then begin
+      ReadFileToStr(OutFile, VerCheck); DeleteFile(OutFile);
+      if VerCheck = '3.12' then PythonExePath := Candidate;
     end;
   end;
 
