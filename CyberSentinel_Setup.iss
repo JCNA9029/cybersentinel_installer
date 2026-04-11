@@ -186,21 +186,40 @@ Root: HKLM; Subkey: "SOFTWARE\{#MyAppName}"; ValueType: string; ValueName: "Vers
 Root: HKLM; Subkey: "SOFTWARE\{#MyAppName}"; ValueType: string; ValueName: "PythonExe";   ValueData: ""; Flags: uninsdeletekeyifempty
 Root: HKLM; Subkey: "SOFTWARE\{#MyAppName}"; ValueType: string; ValueName: "PythonwExe";  ValueData: ""; Flags: uninsdeletekeyifempty
 
+
 [Code]
-// ─────────────────────────────────────────────────────────────
-//  Pascal/Code section — handles dynamic logic
-// ─────────────────────────────────────────────────────────────
+// ============================================================
+//  Pascal/Code section
+//  Engine: RemObjects Pascal Script (Inno Setup 6)
+//
+//  Compatibility rules applied throughout:
+//    - No "for X in [array]" — use explicit if/else chains
+//    - No inline var declarations
+//    - No String(AnsiString) casts — use LoadStringFromFile directly
+//    - No ProgressBar.Position — use WizardForm.ProgressGauge
+//    - All functions verified against Inno Setup 6 built-in list
+// ============================================================
 
 var
-  ProgressPage:  TOutputProgressWizardPage;
-  StepLabel:     TNewStaticText;
-  LogMemo:       TNewMemo;
-  CurrentStep:   String;
-  PythonExePath: String;  // Resolved after Python install — used by all [Run] steps and shortcuts
+  PythonExePath: String;  // Set by ResolvePythonPath; used by all [Run] steps
+  InstallStep:   Integer; // Tracks current step for progress bar (0-based)
 
-// Reads a file into OutStr using Inno Setup's built-in LoadStringFromFile.
-// S is AnsiString in Unicode Inno Setup 6, so we cast to String after loading.
-function ReadFileToStr(const FileName: String; var OutStr: String): Boolean;
+// ── Update the built-in installation progress gauge ──────────
+// WizardForm.ProgressGauge is the actual progress bar on the
+// Installing page — this is the correct, documented API.
+procedure SetStep(const Msg: String);
+begin
+  InstallStep := InstallStep + 1;
+  WizardForm.StatusLabel.Caption := Msg;
+  // Max = 10 steps total; keeps bar moving visibly
+  WizardForm.ProgressGauge.Position :=
+    InstallStep * (WizardForm.ProgressGauge.Max div 10);
+end;
+
+// ── Read a file written by a Python script into a String ─────
+// LoadStringFromFile is a genuine Inno Setup built-in.
+// Its second parameter is AnsiString in Unicode Inno Setup 6.
+function ReadTmpFile(const FileName: String; var OutStr: String): Boolean;
 var
   Raw: AnsiString;
 begin
@@ -211,236 +230,216 @@ begin
     OutStr := '';
 end;
 
-// Called from [Run] BeforeInstall to update the visible label
-procedure SetStep(const Msg: String);
-begin
-  CurrentStep := Msg;
-  if Assigned(ProgressPage) then begin
-    ProgressPage.SetText(Msg, '');
-    ProgressPage.SetProgress(ProgressPage.ProgressBar.Position + 1, 10);
-  end;
-end;
-
-// ── Custom wizard pages ──────────────────────────────────────
-procedure InitializeWizard;
-begin
-  ProgressPage := CreateOutputProgressPage(
-    'Installing CyberSentinel',
-    'Please wait while the setup configures your system...'
-  );
-end;
-
-// ── Python 3.12 detection — runs BEFORE files are installed ─────────────────
-// check_python.bat is not on disk yet at PrepareToInstall time ([Files] hasn't
-// run yet). We write a tiny .py script to {tmp} and run it — this completely
-// avoids cmd.exe quoting hell with nested double-quotes.
-function PythonInstalled: Boolean;
+// ── Write a tiny Python script to {tmp} and run it ───────────
+// Returns the first line of output written by the script to OutFile.
+// Using a file avoids all cmd.exe quoting complexity entirely.
+function RunPyScript(const PythonExe, ScriptBody, OutFile: String): String;
 var
   ScriptFile: String;
-  OutFile:    String;
-  VerStr:     String;
   ResultCode: Integer;
 begin
-  Result     := False;
-  ScriptFile := ExpandConstant('{tmp}\cs_ver_check.py');
-  OutFile    := ExpandConstant('{tmp}\cs_ver_check.txt');
+  Result     := '';
+  ScriptFile := ExpandConstant('{tmp}\cs_tmp_script.py');
+  DeleteFile(ScriptFile);
+  DeleteFile(OutFile);
 
-  // Write a self-contained script — no quoting issues at all
-  SaveStringToFile(ScriptFile,
-    'import sys' + #13#10 +
-    'v = ".".join(str(x) for x in sys.version_info[:2])' + #13#10 +
-    'open(r"' + OutFile + '", "w").write(v)' + #13#10,
-    False);
+  SaveStringToFile(ScriptFile, ScriptBody, False);
 
-  Exec('python.exe', '"' + ScriptFile + '"',
+  Exec(PythonExe, '"' + ScriptFile + '"',
     '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
 
-  if FileExists(OutFile) then begin
-    ReadFileToStr(OutFile, VerStr);
-    DeleteFile(OutFile);
-    Result := (VerStr = '3.12');
-  end;
+  if FileExists(OutFile) then
+    ReadTmpFile(OutFile, Result);
+
   DeleteFile(ScriptFile);
+  DeleteFile(OutFile);
 end;
 
+// ── Check whether Python 3.12 is on PATH ─────────────────────
+// Called from PrepareToInstall BEFORE [Files] are on disk.
+function PythonInstalled: Boolean;
+var
+  OutFile: String;
+  VerStr:  String;
+  Script:  String;
+begin
+  OutFile := ExpandConstant('{tmp}\cs_ver.txt');
+  Script  :=
+    'import sys' + #13#10 +
+    'v = str(sys.version_info[0]) + "." + str(sys.version_info[1])' + #13#10 +
+    'f = open(r"' + OutFile + '", "w")' + #13#10 +
+    'f.write(v)' + #13#10 +
+    'f.close()' + #13#10;
+
+  VerStr := RunPyScript('python.exe', Script, OutFile);
+  Result := (VerStr = '3.12');
+end;
+
+// ── Download a file using PowerShell ─────────────────────────
 function DownloadFile(const URL, Dest: String): Boolean;
 var
   ResultCode: Integer;
 begin
   Result := Exec('powershell.exe',
-    Format('-NoProfile -NonInteractive -Command "Invoke-WebRequest -Uri ''%s'' -OutFile ''%s'' -UseBasicParsing"', [URL, Dest]),
+    '-NoProfile -NonInteractive -Command "Invoke-WebRequest' +
+    ' -Uri ''' + URL + '''' +
+    ' -OutFile ''' + Dest + '''' +
+    ' -UseBasicParsing"',
     '', SW_HIDE, ewWaitUntilTerminated, ResultCode)
     and (ResultCode = 0);
 end;
 
-// ── Resolve the exact Python 3.12 executable path ────────────
-// Writes result into PythonExePath and saves it to the registry
-// so [Icons] shortcuts and any external tool can read it later.
-//
-// On a clean PC, a freshly-installed Python 3.12 is NOT yet on the
-// current process's PATH (we inherited the old PATH before Python
-// was installed). So we probe known install locations FIRST, then
-// try PATH as a fallback.
-// All version checks use a temp .py script to avoid cmd.exe quoting bugs.
+// ── Try one Python candidate path; return True if it is 3.12 ─
+function TryPythonCandidate(const Candidate: String): Boolean;
+var
+  OutFile: String;
+  VerStr:  String;
+  Script:  String;
+begin
+  Result  := False;
+  OutFile := ExpandConstant('{tmp}\cs_cand.txt');
+  Script  :=
+    'import sys' + #13#10 +
+    'v = str(sys.version_info[0]) + "." + str(sys.version_info[1])' + #13#10 +
+    'f = open(r"' + OutFile + '", "w")' + #13#10 +
+    'f.write(v)' + #13#10 +
+    'f.close()' + #13#10;
+
+  VerStr := RunPyScript(Candidate, Script, OutFile);
+  Result := (VerStr = '3.12');
+end;
+
+// ── Resolve the exact Python 3.12 path and persist to registry ─
+// On a clean PC the newly-installed Python is NOT yet on PATH
+// because the installer process inherited the old PATH env.
+// We probe known install locations first, fall back to PATH last.
 procedure ResolvePythonPath;
 var
-  ScriptFile:  String;
-  OutFile:     String;
-  Candidate:   String;
-  ResultCode:  Integer;
-  VerCheck:    String;
+  OutFile:   String;
+  Script:    String;
+  Candidate: String;
+  ResultCode: Integer;
 begin
   PythonExePath := '';
-  ScriptFile    := ExpandConstant('{tmp}\cs_pypath.py');
-  OutFile       := ExpandConstant('{tmp}\cs_pypath.txt');
 
-  // Write version-check script once; reuse for each candidate
-  SaveStringToFile(ScriptFile,
-    'import sys' + #13#10 +
-    'v = ".".join(str(x) for x in sys.version_info[:2])' + #13#10 +
-    'open(r"' + OutFile + '", "w").write(v)' + #13#10,
-    False);
-
-  // ── 1. Probe all known Python 3.12 install locations first ───────────────
-  // Covers both system-wide (InstallAllUsers=1) and per-user installs.
-  // RemObjects Pascal Script does not support "for X in [array]" syntax,
-  // so we check each candidate path explicitly.
+  // 1. System-wide install (InstallAllUsers=1, the default for our /quiet run)
   Candidate := 'C:\Program Files\Python312\python.exe';
-  if (PythonExePath = '') and FileExists(Candidate) then begin
-    if FileExists(OutFile) then DeleteFile(OutFile);
-    Exec(Candidate, '"' + ScriptFile + '"', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
-    if FileExists(OutFile) then begin
-      ReadFileToStr(OutFile, VerCheck); DeleteFile(OutFile);
-      if VerCheck = '3.12' then PythonExePath := Candidate;
-    end;
-  end;
+  if FileExists(Candidate) and TryPythonCandidate(Candidate) then
+    PythonExePath := Candidate;
 
-  Candidate := 'C:\Python312\python.exe';
-  if (PythonExePath = '') and FileExists(Candidate) then begin
-    if FileExists(OutFile) then DeleteFile(OutFile);
-    Exec(Candidate, '"' + ScriptFile + '"', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
-    if FileExists(OutFile) then begin
-      ReadFileToStr(OutFile, VerCheck); DeleteFile(OutFile);
-      if VerCheck = '3.12' then PythonExePath := Candidate;
-    end;
-  end;
-
-  Candidate := ExpandConstant('{localappdata}\Programs\Python\Python312\python.exe');
-  if (PythonExePath = '') and FileExists(Candidate) then begin
-    if FileExists(OutFile) then DeleteFile(OutFile);
-    Exec(Candidate, '"' + ScriptFile + '"', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
-    if FileExists(OutFile) then begin
-      ReadFileToStr(OutFile, VerCheck); DeleteFile(OutFile);
-      if VerCheck = '3.12' then PythonExePath := Candidate;
-    end;
-  end;
-
-  // ── 2. Fallback: ask whatever 'python' is on PATH ────────────────────────
-  // Covers users who already had Python 3.12 before running the installer.
+  // 2. Legacy system-wide path some installers used
   if PythonExePath = '' then begin
-    if FileExists(OutFile) then DeleteFile(OutFile);
-    // Write a script that outputs the executable path itself
-    SaveStringToFile(ScriptFile,
+    Candidate := 'C:\Python312\python.exe';
+    if FileExists(Candidate) and TryPythonCandidate(Candidate) then
+      PythonExePath := Candidate;
+  end;
+
+  // 3. Per-user install path
+  if PythonExePath = '' then begin
+    Candidate := ExpandConstant('{localappdata}\Programs\Python\Python312\python.exe');
+    if FileExists(Candidate) and TryPythonCandidate(Candidate) then
+      PythonExePath := Candidate;
+  end;
+
+  // 4. Fallback: ask whatever 'python' is on PATH to report its own exe path
+  if PythonExePath = '' then begin
+    OutFile := ExpandConstant('{tmp}\cs_exe.txt');
+    Script  :=
       'import sys' + #13#10 +
-      'open(r"' + OutFile + '", "w").write(sys.executable)' + #13#10,
-      False);
-    Exec('python.exe', '"' + ScriptFile + '"',
-      '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
-    if FileExists(OutFile) then begin
-      ReadFileToStr(OutFile, PythonExePath);
-      DeleteFile(OutFile);
-    end;
+      'f = open(r"' + OutFile + '", "w")' + #13#10 +
+      'f.write(sys.executable)' + #13#10 +
+      'f.close()' + #13#10;
+    PythonExePath := RunPyScript('python.exe', Script, OutFile);
   end;
 
-  DeleteFile(ScriptFile);
-
-  // ── 3. Last resort ────────────────────────────────────────────────────────
+  // 5. Absolute last resort
   if PythonExePath = '' then begin
-    Log('WARNING: Could not locate python.exe; falling back to bare python.exe on PATH.');
+    Log('WARNING: Cannot locate python.exe; falling back to bare name on PATH.');
     PythonExePath := 'python.exe';
   end;
 
-  // Persist to registry so shortcuts survive PATH changes after install.
-  RegWriteStringValue(HKLM, 'SOFTWARE\{#MyAppName}', 'PythonExe', PythonExePath);
-
-  // Also derive pythonw.exe (GUI launcher, no console window) from the same dir.
+  // Persist so [Run] entries and [Icons] shortcuts can read it from the registry
+  RegWriteStringValue(HKLM, 'SOFTWARE\{#MyAppName}', 'PythonExe',  PythonExePath);
   RegWriteStringValue(HKLM, 'SOFTWARE\{#MyAppName}', 'PythonwExe',
     ExtractFilePath(PythonExePath) + 'pythonw.exe');
 end;
 
-// ── Pre-install checks ────────────────────────────────────────
+// ── Pre-install: ensure Python 3.12 exists, resolve its path ─
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 var
   PythonInstaller: String;
   ResultCode:      Integer;
   Attempts:        Integer;
+  Downloaded:      Boolean;
 begin
-  Result := '';
+  Result      := '';
+  InstallStep := 0;
 
-  // ── Ensure Python 3.12 is present ──
   if not PythonInstalled then begin
     SetStep('Python 3.12 not found — downloading installer...');
     PythonInstaller := ExpandConstant('{tmp}\python312_installer.exe');
 
-    Attempts := 0;
+    Downloaded := False;
+    Attempts   := 0;
     while Attempts < 3 do begin
       if DownloadFile(
-        'https://www.python.org/ftp/python/3.12.9/python-3.12.9-amd64.exe',
-        PythonInstaller) then Break;
-      Attempts := Attempts + 1;
-      if Attempts = 3 then begin
-        Result := 'Failed to download Python 3.12 after 3 attempts. Please check your internet connection and re-run the installer.';
-        Exit;
+          'https://www.python.org/ftp/python/3.12.9/python-3.12.9-amd64.exe',
+          PythonInstaller) then begin
+        Downloaded := True;
+        Break;
       end;
+      Attempts := Attempts + 1;
     end;
 
-    SetStep('Installing Python 3.12 (this may take a minute)...');
+    if not Downloaded then begin
+      Result := 'Failed to download Python 3.12 after 3 attempts.' +
+                ' Please check your internet connection and re-run.';
+      Exit;
+    end;
+
+    SetStep('Installing Python 3.12...');
     if not Exec(PythonInstaller,
-      '/quiet InstallAllUsers=1 PrependPath=1 Include_pip=1',
-      '', SW_HIDE, ewWaitUntilTerminated, ResultCode)
-      or (ResultCode <> 0) then begin
-      Result := Format('Python 3.12 installation failed (exit code %d). Please install Python 3.12 manually from python.org and re-run this installer.', [ResultCode]);
+        '/quiet InstallAllUsers=1 PrependPath=1 Include_pip=1',
+        '', SW_HIDE, ewWaitUntilTerminated, ResultCode)
+       or (ResultCode <> 0) then begin
+      Result := 'Python 3.12 installation failed (exit code ' +
+                IntToStr(ResultCode) + ').' +
+                ' Please install Python 3.12 from python.org and re-run.';
       Exit;
     end;
   end;
 
-  // ── Pin the exact Python path used for all subsequent steps ──
-  // Must run AFTER Python is confirmed installed.
+  // Pin the exact executable path into PythonExePath and the registry
+  SetStep('Detecting Python location...');
   ResolvePythonPath;
 
-  // ── Verify pip is available, bootstrap if not ────────────────
-  // Catches the edge case where Python was installed without pip
-  // (e.g. per-user install with pip checkbox unchecked).
-  SetStep('Verifying pip is available...');
+  // Bootstrap pip if missing (install_helper --step deps also does this,
+  // but doing it here gives a cleaner error message if it fails)
+  SetStep('Verifying pip...');
   if not Exec(PythonExePath, '-m pip --version',
-    '', SW_HIDE, ewWaitUntilTerminated, ResultCode)
-    or (ResultCode <> 0) then begin
-    log('pip missing — running ensurepip...');
+      '', SW_HIDE, ewWaitUntilTerminated, ResultCode)
+     or (ResultCode <> 0) then begin
+    Log('pip not found — running ensurepip...');
     Exec(PythonExePath, '-m ensurepip --upgrade',
       '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
-    // If ensurepip also fails, install_helper._ensure_pip() will
-    // attempt the get-pip.py fallback during the deps step.
   end;
 end;
 
-// ── Guard against overwriting existing config.json ───────────
+// ── Guard existing config.json on reinstall ───────────────────
 procedure CurStepChanged(CurStep: TSetupStep);
 var
-  ConfigPath:  String;
-  BackupPath:  String;
+  ConfigPath: String;
+  BackupPath: String;
 begin
+  ConfigPath := ExpandConstant('{#MyInstallDir}\config.json');
+  BackupPath  := ExpandConstant('{#MyInstallDir}\config.json.bak');
+
   if CurStep = ssInstall then begin
-    ConfigPath := ExpandConstant('{#MyInstallDir}\config.json');
-    BackupPath  := ExpandConstant('{#MyInstallDir}\config.json.bak');
-    // Back up existing config so it isn't overwritten
     if FileExists(ConfigPath) then
       RenameFile(ConfigPath, BackupPath);
   end;
 
   if CurStep = ssPostInstall then begin
-    // Restore config backup if it exists (preserves user API keys)
-    ConfigPath := ExpandConstant('{#MyInstallDir}\config.json');
-    BackupPath  := ExpandConstant('{#MyInstallDir}\config.json.bak');
     if FileExists(BackupPath) then begin
       DeleteFile(ConfigPath);
       RenameFile(BackupPath, ConfigPath);
@@ -448,15 +447,15 @@ begin
   end;
 end;
 
-// ── Uninstall: prompt to remove user data ────────────────────
+// ── Uninstall: offer to remove AI models ─────────────────────
 function InitializeUninstall: Boolean;
 var
   Answer: Integer;
 begin
   Result := True;
   Answer := MsgBox(
-    'Do you also want to remove downloaded AI models and user data in C:\CyberSentinel?' + #13#10 +
-    '(Choose "No" to keep your models for a future reinstall.)',
+    'Do you also want to remove downloaded AI models and user data?' +
+    #13#10 + '(Choose No to keep models for a future reinstall.)',
     mbConfirmation, MB_YESNO);
   if Answer = IDYES then
     DelTree(ExpandConstant('{#MyInstallDir}\models'), True, True, True);
