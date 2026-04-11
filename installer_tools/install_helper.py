@@ -94,6 +94,31 @@ GIT_CANDIDATE_PATHS = [
     r"C:\Program Files (x86)\Git\cmd\git.exe",
 ]
 
+# Known Ollama installation paths (Ollama installs to AppData\Local\Programs by default)
+OLLAMA_CANDIDATE_PATHS = [
+    os.path.expandvars(r"%LOCALAPPDATA%\Programs\Ollama\ollama.exe"),
+    r"C:\Program Files\Ollama\ollama.exe",
+    os.path.expandvars(r"%LOCALAPPDATA%\Ollama\ollama.exe"),
+]
+
+
+def find_ollama_exe() -> str:
+    """
+    Return the full path to ollama.exe, checking known install locations
+    before falling back to PATH. After a fresh silent install, ollama is NOT
+    yet on the current process's PATH, so shutil.which() alone is unreliable.
+    """
+    for candidate in OLLAMA_CANDIDATE_PATHS:
+        if os.path.isfile(candidate):
+            log(f"Found ollama at: {candidate}")
+            return candidate
+    # Fall back to PATH (covers machines where Ollama was already installed)
+    found = shutil.which("ollama")
+    if found:
+        log(f"Found ollama on PATH: {found}")
+        return found
+    return "ollama"  # last resort — let it fail with a clear OS error
+
 
 # ── Logging ───────────────────────────────────────────────────
 def log(msg: str, level: str = "INFO"):
@@ -544,12 +569,25 @@ def step_ollama():
     # Give Ollama a moment to finish background registration
     time.sleep(3)
 
+    # Locate ollama.exe — it won't be on PATH yet after a fresh install
+    ollama_exe = find_ollama_exe()
+    log(f"Using ollama at: {ollama_exe}")
+
     # Start Ollama server in the background
     log("Starting Ollama serve...")
-    subprocess.Popen(["ollama", "serve"],
+    subprocess.Popen([ollama_exe, "serve"],
                      creationflags=subprocess.CREATE_NO_WINDOW)
-    time.sleep(5)
-    log("Ollama installed and running.")
+
+    # Poll until ollama responds (up to 30 seconds)
+    log("Waiting for Ollama to become ready...")
+    for _ in range(15):
+        time.sleep(2)
+        r = subprocess.run([ollama_exe, "list"], capture_output=True)
+        if r.returncode == 0:
+            log("Ollama is ready.")
+            return
+    log("Ollama did not respond within 30 s — continuing anyway; "
+        "create_modelfile.py will wait for it.", "WARN")
 
 
 # ═══════════════════════════════════════════════════════════════

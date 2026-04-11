@@ -10,6 +10,7 @@ Expected GGUF location:
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -23,6 +24,25 @@ MODELFILE     = INSTALL_DIR / "Modelfile"
 CONFIG_PATH   = INSTALL_DIR / "config.json"
 LOG_PATH      = INSTALL_DIR / "install_log.txt"
 MODEL_NAME    = "cybersentinel-analyst"
+
+# Known Ollama installation paths — ollama.exe is NOT on PATH right after
+# a fresh silent install, so we probe known locations before falling back.
+OLLAMA_CANDIDATE_PATHS = [
+    os.path.expandvars(r"%LOCALAPPDATA%\Programs\Ollama\ollama.exe"),
+    r"C:\Program Files\Ollama\ollama.exe",
+    os.path.expandvars(r"%LOCALAPPDATA%\Ollama\ollama.exe"),
+]
+
+
+def find_ollama_exe() -> str:
+    """Return the full path to ollama.exe, probing known locations first."""
+    for candidate in OLLAMA_CANDIDATE_PATHS:
+        if os.path.isfile(candidate):
+            return candidate
+    found = shutil.which("ollama")
+    if found:
+        return found
+    return "ollama"  # last resort
 
 # ── System prompt (exactly as specified) ─────────────────────
 SYSTEM_PROMPT = (
@@ -64,20 +84,22 @@ def fail(msg: str):
 
 def ensure_ollama_running():
     """Start ollama serve if it's not already listening."""
+    ollama_exe = find_ollama_exe()
+    log(f"Using ollama at: {ollama_exe}")
     log("Checking if Ollama is running...")
     result = subprocess.run(
-        ["ollama", "list"],
+        [ollama_exe, "list"],
         capture_output=True, text=True
     )
     if result.returncode != 0:
         log("Ollama not responding — starting ollama serve...")
         subprocess.Popen(
-            ["ollama", "serve"],
+            [ollama_exe, "serve"],
             creationflags=subprocess.CREATE_NO_WINDOW
         )
         for _ in range(15):
             time.sleep(2)
-            r = subprocess.run(["ollama", "list"], capture_output=True)
+            r = subprocess.run([ollama_exe, "list"], capture_output=True)
             if r.returncode == 0:
                 log("Ollama is now running.")
                 return
@@ -105,7 +127,7 @@ def import_model():
     for attempt in range(1, 4):
         log(f"  Attempt {attempt}/3 ...")
         result = subprocess.run(
-            ["ollama", "create", MODEL_NAME, "-f", str(MODELFILE)],
+            [find_ollama_exe(), "create", MODEL_NAME, "-f", str(MODELFILE)],
             capture_output=True, text=True, encoding="utf-8", errors="replace"
         )
         log(f"  stdout: {result.stdout.strip()}")
@@ -139,7 +161,7 @@ def patch_config():
 def verify_model():
     """Confirm the model appears in 'ollama list'."""
     result = subprocess.run(
-        ["ollama", "list"], capture_output=True, text=True, encoding="utf-8"
+        [find_ollama_exe(), "list"], capture_output=True, text=True, encoding="utf-8"
     )
     if MODEL_NAME in result.stdout:
         log(f"Verification passed: '{MODEL_NAME}' found in ollama list.")

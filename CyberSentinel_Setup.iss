@@ -198,21 +198,17 @@ var
   CurrentStep:   String;
   PythonExePath: String;  // Resolved after Python install — used by all [Run] steps and shortcuts
 
-// Reads the first line of a text file into OutStr; returns True on success.
+// Reads a file into OutStr using Inno Setup's built-in LoadStringFromFile.
+// S is AnsiString in Unicode Inno Setup 6, so we cast to String after loading.
 function ReadFileToStr(const FileName: String; var OutStr: String): Boolean;
 var
-  F: Integer;
-  Buf: AnsiString;
+  Raw: AnsiString;
 begin
-  Result := False;
-  OutStr := '';
-  F := FileOpen(FileName, fmOpenRead);
-  if F = -1 then Exit;
-  SetLength(Buf, 32767);
-  SetLength(Buf, FileRead(F, Buf[1], 32767));
-  FileClose(F);
-  OutStr := Trim(String(Buf));
-  Result := True;
+  Result := LoadStringFromFile(FileName, Raw);
+  if Result then
+    OutStr := Trim(String(Raw))
+  else
+    OutStr := '';
 end;
 
 // Called from [Run] BeforeInstall to update the visible label
@@ -236,24 +232,35 @@ end;
 
 // ── Python 3.12 detection — runs BEFORE files are installed ─────────────────
 // check_python.bat is not on disk yet at PrepareToInstall time ([Files] hasn't
-// run yet), so we ask Python directly and parse the version ourselves.
+// run yet). We write a tiny .py script to {tmp} and run it — this completely
+// avoids cmd.exe quoting hell with nested double-quotes.
 function PythonInstalled: Boolean;
 var
-  TmpFile:    String;
+  ScriptFile: String;
+  OutFile:    String;
   VerStr:     String;
   ResultCode: Integer;
 begin
-  Result  := False;
-  TmpFile := ExpandConstant('{tmp}\py_ver_check.txt');
-  Exec('cmd.exe',
-    '/c python -c "import sys; open(r\"' + TmpFile +
-    '\",\"w\").write(\".\".join(map(str,sys.version_info[:2])))"',
+  Result     := False;
+  ScriptFile := ExpandConstant('{tmp}\cs_ver_check.py');
+  OutFile    := ExpandConstant('{tmp}\cs_ver_check.txt');
+
+  // Write a self-contained script — no quoting issues at all
+  SaveStringToFile(ScriptFile,
+    'import sys' + #13#10 +
+    'v = ".".join(str(x) for x in sys.version_info[:2])' + #13#10 +
+    'open(r"' + OutFile + '", "w").write(v)' + #13#10,
+    False);
+
+  Exec('python.exe', '"' + ScriptFile + '"',
     '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
-  if FileExists(TmpFile) then begin
-    ReadFileToStr(TmpFile, VerStr);
-    DeleteFile(TmpFile);
+
+  if FileExists(OutFile) then begin
+    ReadFileToStr(OutFile, VerStr);
+    DeleteFile(OutFile);
     Result := (VerStr = '3.12');
   end;
+  DeleteFile(ScriptFile);
 end;
 
 function DownloadFile(const URL, Dest: String): Boolean;
@@ -273,62 +280,69 @@ end;
 // On a clean PC, a freshly-installed Python 3.12 is NOT yet on the
 // current process's PATH (we inherited the old PATH before Python
 // was installed). So we probe known install locations FIRST, then
-// try PATH as a fallback, not the other way around.
+// try PATH as a fallback.
+// All version checks use a temp .py script to avoid cmd.exe quoting bugs.
 procedure ResolvePythonPath;
 var
-  PathTxtFile: String;
+  ScriptFile:  String;
+  OutFile:     String;
   Candidate:   String;
   ResultCode:  Integer;
   VerCheck:    String;
 begin
   PythonExePath := '';
+  ScriptFile    := ExpandConstant('{tmp}\cs_pypath.py');
+  OutFile       := ExpandConstant('{tmp}\cs_pypath.txt');
+
+  // Write version-check script once; reuse for each candidate
+  SaveStringToFile(ScriptFile,
+    'import sys' + #13#10 +
+    'v = ".".join(str(x) for x in sys.version_info[:2])' + #13#10 +
+    'open(r"' + OutFile + '", "w").write(v)' + #13#10,
+    False);
 
   // ── 1. Probe all known Python 3.12 install locations first ───────────────
-  // These are written by the Python 3.12 installer regardless of PATH state.
+  // Covers both system-wide (InstallAllUsers=1) and per-user installs.
   for Candidate in [
     'C:\Program Files\Python312\python.exe',
     'C:\Python312\python.exe',
-    ExpandConstant('{localappdata}\Programs\Python\Python312\python.exe'),
-    ExpandConstant('{localappdata}\Programs\Python\Python3\python.exe')
+    ExpandConstant('{localappdata}\Programs\Python\Python312\python.exe')
   ] do begin
     if FileExists(Candidate) then begin
-      PythonExePath := Candidate;
-      Break;
+      if FileExists(OutFile) then DeleteFile(OutFile);
+      Exec(Candidate, '"' + ScriptFile + '"',
+        '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+      if FileExists(OutFile) then begin
+        ReadFileToStr(OutFile, VerCheck);
+        DeleteFile(OutFile);
+        if VerCheck = '3.12' then begin
+          PythonExePath := Candidate;
+          Break;
+        end;
+      end;
     end;
   end;
 
-  // ── 2. If a known path was found, verify it really is 3.12 ───────────────
-  if PythonExePath <> '' then begin
-    PathTxtFile := ExpandConstant('{tmp}\py_ver_resolve.txt');
-    Exec('cmd.exe',
-      '/c "' + PythonExePath + '" -c "import sys; open(r\"' + PathTxtFile +
-      '\",\"w\").write(\".\".join(map(str,sys.version_info[:2])))"',
-      '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
-    if FileExists(PathTxtFile) then begin
-      ReadFileToStr(PathTxtFile, VerCheck);
-      DeleteFile(PathTxtFile);
-      if VerCheck <> '3.12' then
-        PythonExePath := '';   // found file but wrong version; keep searching
-    end else
-      PythonExePath := '';     // couldn't run it
-  end;
-
-  // ── 3. Fallback: ask whatever 'python' is on PATH ────────────────────────
-  // This covers the case where the user had Python 3.12 already installed
-  // before running the installer (PATH was inherited correctly).
+  // ── 2. Fallback: ask whatever 'python' is on PATH ────────────────────────
+  // Covers users who already had Python 3.12 before running the installer.
   if PythonExePath = '' then begin
-    PathTxtFile := ExpandConstant('{tmp}\py_path_resolve.txt');
-    Exec('cmd.exe',
-      '/c python -c "import sys; open(r\"' + PathTxtFile +
-      '\",\"w\").write(sys.executable)"',
+    if FileExists(OutFile) then DeleteFile(OutFile);
+    // Write a script that outputs the executable path itself
+    SaveStringToFile(ScriptFile,
+      'import sys' + #13#10 +
+      'open(r"' + OutFile + '", "w").write(sys.executable)' + #13#10,
+      False);
+    Exec('python.exe', '"' + ScriptFile + '"',
       '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
-    if FileExists(PathTxtFile) then begin
-      ReadFileToStr(PathTxtFile, PythonExePath);
-      DeleteFile(PathTxtFile);
+    if FileExists(OutFile) then begin
+      ReadFileToStr(OutFile, PythonExePath);
+      DeleteFile(OutFile);
     end;
   end;
 
-  // ── 4. Last resort — bare 'python.exe' and hope for the best ─────────────
+  DeleteFile(ScriptFile);
+
+  // ── 3. Last resort ────────────────────────────────────────────────────────
   if PythonExePath = '' then begin
     Log('WARNING: Could not locate python.exe; falling back to bare python.exe on PATH.');
     PythonExePath := 'python.exe';
