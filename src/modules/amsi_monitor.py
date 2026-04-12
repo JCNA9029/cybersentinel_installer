@@ -22,22 +22,28 @@ from . import utils
 from . import colors
 
 # ─── Obfuscation indicator patterns ──────────────────────────────────────────
+# IMPORTANT: PowerShell flags like -NoProfile and -WindowStyle Hidden can appear
+# in any order. The old combined rule  r"-nop[rofile]*\s+-[wW][indow]*\s+[hH]id"
+# only fired when -NoProfile came immediately before -WindowStyle. Any intervening
+# flag (e.g. -ExecutionPolicy Bypass) broke the match. Each flag is now its own
+# independent rule so order on the command line no longer matters.
 OBFUSCATION_PATTERNS: list[tuple[str, str, str]] = [
     # (regex, mitre_id, description)
-    (r"-e[nc]{0,6}\s+[A-Za-z0-9+/=]{30,}",         "T1027",     "Base64-encoded PowerShell command (-enc flag)"),
-    (r"\[System\.Convert\]::FromBase64String",        "T1027",     "Inline base64 decode — common stager pattern"),
-    (r"IEX\s*\(|Invoke-Expression\s*\(",              "T1059.001", "IEX / Invoke-Expression — executes downloaded string"),
-    (r"Invoke-Mimikatz|Invoke-ReflectivePEInjection",  "T1055",     "PowerSploit module detected"),
-    (r"\[Runtime\.InteropServices\.Marshal\]",         "T1055",     "P/Invoke via Marshal — memory injection pattern"),
-    (r"New-Object\s+Net\.WebClient|DownloadString\(",  "T1105",     "WebClient download cradle — remote payload fetch"),
-    (r"Start-BitsTransfer.*http",                      "T1197",     "BITS transfer cradle"),
-    (r"-nop[rofile]*\s+-[wW][indow]*\s+[hH]id",       "T1059.001", "PowerShell hidden window no-profile execution"),
-    (r"-[eE]xec[utionPolicy]*\s+[bB]ypass",            "T1059.001", "ExecutionPolicy bypass"),
-    (r"VirtualAlloc|WriteProcessMemory|CreateThread",  "T1055",     "Win32 memory allocation APIs via PowerShell"),
-    (r"amsiInitFailed|amsiContext\s*=\s*0",            "T1562.001", "AMSI bypass attempt detected"),
-    (r"\$env:TEMP.*\.exe|%TEMP%.*\.exe",               "T1036",     "Temp directory executable drop"),
-    (r"char\(\d+\)\s*\+\s*char\(\d+\)",                "T1027",     "Character-code string construction (obfuscation)"),
-    (r"\.replace\(['\"].\s*['\"],\s*['\"]['\"]",       "T1027",     "String replace obfuscation pattern"),
+    (r"-e[nc]{0,6}\s+[A-Za-z0-9+/=]{30,}",           "T1027",     "Base64-encoded PowerShell command (-enc flag)"),
+    (r"\[System\.Convert\]::FromBase64String",          "T1027",     "Inline base64 decode — common stager pattern"),
+    (r"IEX\s*[\(\{]|Invoke-Expression\s*[\(\{]",       "T1059.001", "IEX / Invoke-Expression — executes downloaded string"),
+    (r"Invoke-Mimikatz|Invoke-ReflectivePEInjection",   "T1055",     "PowerSploit module detected"),
+    (r"\[Runtime\.InteropServices\.Marshal\]",           "T1055",     "P/Invoke via Marshal — memory injection pattern"),
+    (r"New-Object\s+Net\.WebClient|DownloadString\(",   "T1105",     "WebClient download cradle — remote payload fetch"),
+    (r"Start-BitsTransfer.*http",                       "T1197",     "BITS transfer cradle"),
+    (r"-[nN]o[pP]rofile|-nop\b",                       "T1059.001", "PowerShell -NoProfile flag — stealth execution"),
+    (r"-[wW]indow[sS]tyle\s+[hH]idden|-[wW]\s+[hH]id","T1059.001", "PowerShell hidden window (-WindowStyle Hidden)"),
+    (r"-[eE]xec[utionPolicy]*\s+[bB]ypass",             "T1059.001", "ExecutionPolicy bypass"),
+    (r"VirtualAlloc|WriteProcessMemory|CreateThread",   "T1055",     "Win32 memory allocation APIs via PowerShell"),
+    (r"amsiInitFailed|amsiContext\s*=\s*0",             "T1562.001", "AMSI bypass attempt detected"),
+    (r"\$env:TEMP.*\.exe|%TEMP%.*\.exe",                "T1036",     "Temp directory executable drop"),
+    (r"char\(\d+\)\s*\+\s*char\(\d+\)",                 "T1027",     "Character-code string construction (obfuscation)"),
+    (r"\.replace\(['\"].\s*['\"],\s*['\"]['\"]",        "T1027",     "String replace obfuscation pattern"),
 ]
 
 # Minimum score to raise an alert (each matched pattern = 1 point)
@@ -105,10 +111,14 @@ class AmsiMonitor:
                 for evt in events:
                     if evt.EventID != SCRIPT_BLOCK_EVENT_ID:
                         continue
-                    # Deduplicate by record number
+                    # Deduplicate by record number; cap set size to prevent unbounded growth
                     record_num = evt.RecordNumber
                     if record_num in self._seen_event_ids:
                         continue
+                    if len(self._seen_event_ids) > 50_000:
+                        # Discard oldest half — set has no order so clear half arbitrarily
+                        seen_list = list(self._seen_event_ids)
+                        self._seen_event_ids = set(seen_list[25_000:])
                     self._seen_event_ids.add(record_num)
 
                     script_text = " ".join(str(s) for s in (evt.StringInserts or []))

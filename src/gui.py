@@ -32,6 +32,7 @@ import os
 import sqlite3
 import datetime
 import threading
+import json
 
 # ── Redirect stdout/stderr when running under pythonw.exe ────────────────────
 # pythonw.exe (used by the desktop shortcut) sets sys.stdout and sys.stderr to
@@ -84,6 +85,7 @@ THEME = {
     "red":      "#f85149",
     "green":    "#3fb950",
     "yellow":   "#d29922",
+    "orange":   "#FFA500",
     "blue":     "#58a6ff",
     "purple":   "#bc8cff",
     "red_bg":   "rgba(248,81,73,0.12)",
@@ -525,7 +527,11 @@ class SettingsDialog(QDialog):
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _db_query(sql, params=()):
-    db = os.path.join(BASE_DIR, "threat_cache.db")
+    try:
+        from modules.utils import DB_FILE
+        db = DB_FILE
+    except Exception:
+        db = os.path.join(BASE_DIR, "threat_cache.db")
     if not os.path.isfile(db):
         return []
     try:
@@ -623,14 +629,15 @@ class CyberSentinelGUI(QMainWindow):
             from modules.intel_updater    import update_all, feed_status
             from modules.network_isolation import isolate_network, restore_network
 
+            _utils.init_db()
             self.logic        = ScannerLogic()
-            self.lolbas       = LolbasDetector()
+            self.lolbas       = LolbasDetector(webhook_url=self.logic.webhook_url)
             self.byovd        = ByovdDetector()
             self.correlator   = ChainCorrelator()
             self.baseline     = BaselineEngine()
             self.amsi         = AmsiMonitor()
             # ── Newly wired modules ────────────────────────────────────
-            self.lolbin       = LolbinDetector()
+            self.lolbin       = LolbinDetector(webhook_url=self.logic.webhook_url)
             self.fileless     = FilelessMonitor(correlator=self.correlator)
             self.amsi_scanner = AmsiScanner()
             self.feodo        = FeodoMonitor()
@@ -639,6 +646,17 @@ class CyberSentinelGUI(QMainWindow):
             # Start C2 background monitors
             self.feodo.start()
             self.ja3.start()
+            # Start WMI process monitor (LOLBin + BYOVD + Baseline)
+            self.amsi.start()
+            self.byovd.start_realtime_monitor()
+            import threading
+            from modules.daemon_monitor import _monitor_processes
+            threading.Thread(
+                target=_monitor_processes,
+                args=(self.logic, self.lolbas, self.byovd,
+                      self.baseline, self.dga, self.lolbin, self.fileless),
+                daemon=True
+            ).start()
             # ──────────────────────────────────────────────────────────
             self.update_all   = update_all
             self.feed_status  = feed_status
@@ -2115,7 +2133,7 @@ class CyberSentinelGUI(QMainWindow):
         if not name:
             self._lolbin_result.setPlainText("⚠  Enter a process name.")
             return
-        hit = self.lolbin.check_process(name, cmd)
+        hit = self.lolbin.check(name, cmd)
         if hit:
             self._lolbin_result.setPlainText(self.lolbin.format_alert(hit))
         else:
@@ -2246,7 +2264,7 @@ class CyberSentinelGUI(QMainWindow):
         layout.setSpacing(0)
         layout.addWidget(self._page_header(
             "🔗", "Attack Chain Correlation",
-            "Multi-event attack sequence detection — reads from shared event timeline"
+            "Multi-event attack sequence detection — auto-refreshes every 5 s"
         ))
 
         inner = QWidget()
@@ -2263,6 +2281,7 @@ class CyberSentinelGUI(QMainWindow):
         btn_row.addStretch()
         inner_layout.addLayout(btn_row)
 
+        # ── Detected chains table ──────────────────────────────────────────
         grp = QGroupBox("Detected Attack Chains")
         grp_layout = QVBoxLayout(grp)
         self._chains_table = make_table(
@@ -2277,10 +2296,44 @@ class CyberSentinelGUI(QMainWindow):
         grp_layout.addWidget(self._chains_table)
         inner_layout.addWidget(grp, 1)
 
+        # ── Live Event Feed (event_timeline) ──────────────────────────────
+        feed_grp = QGroupBox("Live Event Feed  (raw event_timeline — last 30 events)")
+        feed_layout = QVBoxLayout(feed_grp)
+        self._event_feed_table = make_table(
+            ["Timestamp", "Event Type", "PID", "Detail"],
+            stretch_col=3,
+            wrap_last=True,
+        )
+        self._event_feed_table.setColumnWidth(0, 155)
+        self._event_feed_table.setColumnWidth(1, 160)
+        self._event_feed_table.setColumnWidth(2, 60)
+        self._event_feed_table.setFixedHeight(200)
+        feed_layout.addWidget(self._event_feed_table)
+        inner_layout.addWidget(feed_grp)
+
         layout.addWidget(inner, 1)
+
+        # Auto-refresh: poll every 5 s, only redraw when counts change
+        self._chains_last_count = -1
+        self._feed_last_count   = -1
+        self._chains_timer = QTimer(self)
+        self._chains_timer.timeout.connect(self._auto_refresh_chains)
+        self._chains_timer.start(5_000)
+
         return page
 
     def _refresh_chains(self):
+        # Always refresh the event feed first so triggering events are visible
+        # before and after correlation runs — fixes the race where clicking
+        # "Run Correlation Sweep" updated the chain table but left the Live
+        # Event Feed stale until the next 5-second auto-timer tick.
+        self._refresh_event_feed()
+        try:
+            feed_count = (_db_query("SELECT COUNT(*) as c FROM event_timeline") or [{"c": 0}])[0]["c"]
+            self._feed_last_count = feed_count  # keep timer in sync, prevent double-refresh
+        except Exception:
+            pass
+
         if hasattr(self, 'correlator'):
             try:
                 self.correlator.run_correlation()
@@ -2307,6 +2360,63 @@ class CyberSentinelGUI(QMainWindow):
                 t.setItem(row, 4, table_item(r.get("description") or "—", THEME["muted"]))
             # Resize rows so full description text is visible without truncation
             t.resizeRowsToContents()
+        # Sync chain count so timer skips re-running correlation unnecessarily
+        try:
+            chain_count = (_db_query("SELECT COUNT(*) as c FROM chain_alerts") or [{"c": 0}])[0]["c"]
+            self._chains_last_count = chain_count
+        except Exception:
+            pass
+    def _auto_refresh_chains(self):
+        """Polls both tables; redraws only when new rows arrive (zero flicker when idle)."""
+        try:
+            chain_count = (_db_query("SELECT COUNT(*) as c FROM chain_alerts") or [{"c": 0}])[0]["c"]
+            feed_count  = (_db_query("SELECT COUNT(*) as c FROM event_timeline") or [{"c": 0}])[0]["c"]
+        except Exception:
+            return
+
+        if feed_count != self._feed_last_count:
+            self._feed_last_count = feed_count
+            self._refresh_event_feed()
+            self._refresh_chains()   # run correlation whenever new events arrive
+            return
+
+        if chain_count != self._chains_last_count:
+            self._chains_last_count = chain_count
+            self._refresh_chains()
+
+    def _refresh_event_feed(self):
+        """Redraws the raw event_timeline feed panel."""
+        rows = _db_query(
+            "SELECT event_type, detail, pid, timestamp FROM event_timeline "
+            "ORDER BY timestamp DESC LIMIT 30"
+        )
+        t = self._event_feed_table
+        t.setRowCount(0)
+        if not rows:
+            r = t.rowCount(); t.insertRow(r)
+            t.setItem(r, 0, table_item("No events yet.", THEME["muted"]))
+            for i in range(1, 4):
+                t.setItem(r, i, table_item(""))
+            return
+
+        # Colour code by event type
+        _type_colors = {
+            "LOLBIN_ABUSE":   THEME["orange"],
+            "LOLBIN_DETECTOR": THEME["orange"],
+            "FILELESS_AMSI":  THEME["yellow"],
+            "C2_CONNECTION":  THEME["red"],
+            "BYOVD_LOAD":     THEME["red"],
+            "DGA_BEACON":     THEME.get("purple", THEME["blue"]),
+        }
+        for row_data in rows:
+            etype  = row_data.get("event_type", "—")
+            color  = _type_colors.get(etype, THEME["muted"])
+            r = t.rowCount(); t.insertRow(r)
+            t.setItem(r, 0, table_item(row_data.get("timestamp", ""), THEME["muted"]))
+            t.setItem(r, 1, table_item(etype, color))
+            t.setItem(r, 2, table_item(str(row_data.get("pid") or "—")))
+            t.setItem(r, 3, table_item(row_data.get("detail") or "—", THEME["muted"]))
+        t.resizeRowsToContents()
 
     # ── PAGE: BASELINE ────────────────────────────────────────────────────────
 
@@ -2405,7 +2515,7 @@ class CyberSentinelGUI(QMainWindow):
         layout.setSpacing(0)
         layout.addWidget(self._page_header(
             "👻", "Fileless / AMSI Alerts",
-            "PowerShell ScriptBlock obfuscation detection via Windows Event Log 4104"
+            "PowerShell ScriptBlock obfuscation + LOLBin detection — auto-refreshes every 5 s"
         ))
 
         inner = QWidget()
@@ -2436,26 +2546,66 @@ class CyberSentinelGUI(QMainWindow):
         inner_layout.addWidget(grp, 1)
 
         layout.addWidget(inner, 1)
+
+        # Auto-refresh: poll DB every 5 s, only redraw when row count changes
+        self._fileless_last_count = -1
+        self._fileless_timer = QTimer(self)
+        self._fileless_timer.timeout.connect(self._auto_refresh_fileless)
+        self._fileless_timer.start(5_000)
+
         return page
+
+    def _auto_refresh_fileless(self):
+        """Polls fileless_alerts row count; redraws only when new rows arrive."""
+        try:
+            rows = _db_query("SELECT COUNT(*) as c FROM fileless_alerts")
+            count = rows[0]["c"] if rows else 0
+        except Exception:
+            count = 0
+        if count != self._fileless_last_count:
+            self._fileless_last_count = count
+            self._refresh_fileless()
 
     def _refresh_fileless(self):
         rows = _db_query(
-            "SELECT source, findings, pid, timestamp FROM fileless_alerts ORDER BY timestamp DESC LIMIT 50"
+            "SELECT source, findings, pid, timestamp FROM fileless_alerts ORDER BY timestamp DESC LIMIT 100"
         )
         t = self._fileless_table
         t.setRowCount(0)
         if not rows:
             row = t.rowCount(); t.insertRow(row)
-            t.setItem(row, 0, table_item("No fileless alerts detected yet.", THEME["muted"]))
+            t.setItem(row, 0, table_item("No fileless / LOLBin alerts detected yet.", THEME["muted"]))
             for i in range(1, 4):
                 t.setItem(row, i, table_item(""))
         else:
             for r in rows:
+                source   = r.get("source", "—")
+                findings = r.get("findings") or "—"
+                pid      = str(r.get("pid", "—"))
+                ts       = r.get("timestamp", "")
+
+                # Parse findings JSON into a readable one-liner
+                try:
+                    parsed = json.loads(findings)
+                    if isinstance(parsed, list):
+                        findings_text = " | ".join(
+                            f"{f.get('mitre','?')} — {f.get('indicator', f.get('desc','?'))}"
+                            for f in parsed
+                        )
+                    else:
+                        findings_text = findings
+                except Exception:
+                    findings_text = findings
+
+                # Colour: LOLBin rows in orange, AMSI rows in yellow
+                is_lolbin = "LOLBIN" in source.upper()
+                text_color = THEME["orange"] if is_lolbin else THEME["yellow"]
+
                 row = t.rowCount(); t.insertRow(row)
-                t.setItem(row, 0, table_item(r.get("timestamp", "")))
-                t.setItem(row, 1, table_item(r.get("source", "—")))
-                t.setItem(row, 2, table_item(r.get("pid", "—")))
-                t.setItem(row, 3, table_item(r.get("findings") or "—", THEME["yellow"]))
+                t.setItem(row, 0, table_item(ts))
+                t.setItem(row, 1, table_item(source, text_color))
+                t.setItem(row, 2, table_item(pid))
+                t.setItem(row, 3, table_item(findings_text, text_color))
             t.resizeRowsToContents()
 
     # ── PAGE: AMSI HOOK ───────────────────────────────────────────────────────
@@ -2539,6 +2689,10 @@ class CyberSentinelGUI(QMainWindow):
         self._amsi_pid = QLineEdit()
         self._amsi_pid.setPlaceholderText("Select row or type")
         self._amsi_pid.setMaximumWidth(90)
+        # Windows PIDs are 32-bit unsigned — cap at 7 digits (max real PID ~4194304)
+        from PyQt6.QtGui import QIntValidator
+        self._amsi_pid.setValidator(QIntValidator(1, 9999999, self._amsi_pid))
+        self._amsi_pid.setMaxLength(7)
         pid_row.addWidget(self._amsi_pid)
         pid_row.addStretch()
         ctrl_layout.addLayout(pid_row)
@@ -2548,9 +2702,17 @@ class CyberSentinelGUI(QMainWindow):
         scan_mem_btn.clicked.connect(self._amsi_scan_memory)
         ctrl_layout.addWidget(scan_mem_btn)
 
-        bg_mon_btn = QPushButton("⏱  Start Background Monitor\n(all processes, 60 s interval)")
-        bg_mon_btn.clicked.connect(self._amsi_start_memory_monitor)
-        ctrl_layout.addWidget(bg_mon_btn)
+        # Store as instance var so _amsi_start_memory_monitor can disable it
+        self._amsi_bg_mon_btn = QPushButton("⏱  Start Background Monitor\n(all processes, 60 s interval)")
+        self._amsi_bg_mon_btn.clicked.connect(self._amsi_start_memory_monitor)
+        ctrl_layout.addWidget(self._amsi_bg_mon_btn)
+
+        # Stop button — hidden until monitor is running
+        self._amsi_bg_stop_btn = QPushButton("⏹  Stop Background Monitor")
+        self._amsi_bg_stop_btn.setObjectName("danger")
+        self._amsi_bg_stop_btn.clicked.connect(self._amsi_stop_memory_monitor)
+        self._amsi_bg_stop_btn.setVisible(False)
+        ctrl_layout.addWidget(self._amsi_bg_stop_btn)
 
         ctrl_layout.addStretch()
         splitter.addWidget(ctrl_panel)
@@ -2643,27 +2805,120 @@ class CyberSentinelGUI(QMainWindow):
             self._amsi_hook_output.setPlainText("✅  No malicious indicators found in script buffer.")
 
     def _amsi_scan_memory(self):
+        import threading
+        from PyQt6.QtCore import QMetaObject, Qt, Q_ARG
+        from modules.amsi_hook import _scan_process_memory
+
         pid_s = self._amsi_pid.text().strip()
         if not pid_s.isdigit():
             self._amsi_hook_output.setPlainText("⚠  Select a process from the table or enter a valid PID.")
             return
+
+        # Resolve process name from the table selection so the memory scanner
+        # can correctly apply the high-value / JIT heuristics and set confidence.
         name_item = self._amsi_proc_table.item(self._amsi_proc_table.currentRow(), 1)
-        name = name_item.text() if name_item else pid_s
+        name = (name_item.text() if name_item else "").strip() or pid_s
+
         self._amsi_hook_output.setPlainText(f"[*] Scanning PID {pid_s} ({name}) for memory injection…")
-        hit = self.fileless.scan_process_memory(int(pid_s))
-        if not hit:
-            self._amsi_hook_output.setPlainText(
-                f"✅  PID {pid_s} ({name}): no memory injection patterns detected.")
-        else:
-            self._amsi_hook_output.setPlainText(
-                f"🔴  INJECTION PATTERN DETECTED in PID {pid_s} ({name}):\n{hit}")
+
+        def _run():
+            pid = int(pid_s)
+            # Call the low-level scanner directly so we get the findings list
+            # (scan_process_memory only returns bool; findings detail is lost).
+            findings = _scan_process_memory(pid, name)
+
+            if findings:
+                # Persist + webhook via the FilelessMonitor pipeline
+                self.fileless._log_to_db(f"PID:{pid}:{name}", "\n".join(findings), pid)
+                if self.fileless.webhook_url:
+                    try:
+                        from modules import utils as _utils
+                        _utils.send_webhook_alert(
+                            self.fileless.webhook_url,
+                            "🔴 Memory Injection Detected (manual scan)",
+                            {"PID": pid, "Process": name,
+                             "Findings": findings[0], "Total regions": len(findings)},
+                        )
+                    except Exception:
+                        pass
+                lines = "\n".join(f"  ✗ {f}" for f in findings)
+                text = f"🔴  INJECTION PATTERN DETECTED in PID {pid_s} ({name}):\n{lines}"
+            else:
+                text = f"✅  PID {pid_s} ({name}): no anonymous RWX regions detected."
+
+            QMetaObject.invokeMethod(
+                self._amsi_hook_output, "setPlainText",
+                Qt.ConnectionType.QueuedConnection,
+                Q_ARG(str, text),
+            )
+
+        threading.Thread(target=_run, daemon=True).start()
 
     def _amsi_start_memory_monitor(self):
-        self.fileless.start_memory_monitor()
+        import threading
+        from PyQt6.QtCore import QMetaObject, Qt, Q_ARG
+
+        # Guard: disable button immediately so multiple clicks can't spawn
+        # multiple FilelessMemMonitor threads running in parallel.
+        btn = self._amsi_bg_mon_btn
+        btn.setEnabled(False)
+        btn.setText("⏱  Monitor Running\n(all processes, 60 s interval)")
+        self._amsi_bg_stop_btn.setVisible(True)
+
+        def _update_output(text):
+            QMetaObject.invokeMethod(
+                self._amsi_hook_output,
+                "setPlainText",
+                Qt.ConnectionType.QueuedConnection,
+                Q_ARG(str, text)
+            )
+
+        _update_output(
+            "[*] Starting background memory monitor...\n"
+            "    Please wait."
+        )
+
+        def _start():
+            try:
+                self.fileless.start_memory_monitor()
+                _update_output(
+                    "[+] Background memory injection monitor started.\n"
+                    "    Scanning all processes every 60 seconds.\n"
+                    "    Alerts will appear in Fileless / AMSI Alerts page."
+                )
+            except Exception as e:
+                _update_output(f"[!] Failed to start monitor: {e}")
+                # Re-enable Start / hide Stop if startup failed
+                QMetaObject.invokeMethod(
+                    btn, "setEnabled",
+                    Qt.ConnectionType.QueuedConnection,
+                    Q_ARG(bool, True)
+                )
+                QMetaObject.invokeMethod(
+                    btn, "setText",
+                    Qt.ConnectionType.QueuedConnection,
+                    Q_ARG(str, "⏱  Start Background Monitor\n(all processes, 60 s interval)")
+                )
+                QMetaObject.invokeMethod(
+                    self._amsi_bg_stop_btn, "setVisible",
+                    Qt.ConnectionType.QueuedConnection,
+                    Q_ARG(bool, False)
+                )
+
+        threading.Thread(target=_start, daemon=True).start()
+
+    def _amsi_stop_memory_monitor(self):
+        """Stops the background memory monitor and resets the Start/Stop buttons."""
+        try:
+            self.fileless.stop()
+        except Exception:
+            pass
+        self._amsi_bg_mon_btn.setEnabled(True)
+        self._amsi_bg_mon_btn.setText("⏱  Start Background Monitor\n(all processes, 60 s interval)")
+        self._amsi_bg_stop_btn.setVisible(False)
         self._amsi_hook_output.setPlainText(
-            "[+] Background memory injection monitor started.\n"
-            "    Scanning all processes every 60 seconds.\n"
-            "    Alerts will appear in Fileless / AMSI Alerts page."
+            "[*] Background memory monitor stopped.\n"
+            "    Click Start to resume scanning."
         )
 
     # ── PAGE: NETWORK ─────────────────────────────────────────────────────────
@@ -3123,6 +3378,14 @@ class CyberSentinelGUI(QMainWindow):
             self.logic.llm_model,
             high_priority_paths=hp_paths,
         )
+        # Push the new webhook URL into the already-running detector instances
+        # so alerts fire immediately without needing a daemon restart.
+        url = self.logic.webhook_url
+        if hasattr(self, "lolbas"):
+            self.lolbas._webhook_url = url
+        if hasattr(self, "lolbin"):
+            self.lolbin._webhook_url = url
+
         self._settings_status.setText(
             f"[+] Configuration saved — LLM: {self.logic.llm_model}"
         )

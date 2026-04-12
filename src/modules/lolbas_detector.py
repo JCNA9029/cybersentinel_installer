@@ -57,11 +57,19 @@ BUILTIN_PATTERNS: list[tuple] = [
     # Credential Access
     ("procdump.exe",    r"-ma\s+lsass|lsass\.exe",                       "T1003.001",      "ProcDump LSASS memory dump — credential harvesting",            3),
     ("ntdsutil.exe",    r"ifm|ac\s+instance\s+ntds",                     "T1003.003",      "NTDSUtil NTDS.dit extraction",                                  3),
-    # PowerShell obfuscation
-    ("powershell.exe",  r"-e[nc]{0,6}\s+[A-Za-z0-9+/=]{20,}|-nop.{0,30}-w.{0,20}hid|-exec.{0,20}bypass",
+    # PowerShell — each stealth flag is its own alternative so flag ORDER does not matter
+    # The old single rule  r"-nop.{0,30}-w.{0,20}hid"  only fired when -NoProfile came
+    # immediately before -WindowStyle Hidden.  Any intervening flag (e.g. -ExecutionPolicy)
+    # broke the match.  Independent alternatives fix this.
+    ("powershell.exe",  r"-e[nc]{0,6}\s+[A-Za-z0-9+/=]{20,}|-nop[rofile]*|-w[indowStyle]*\s+hid[den]*|-exec[utionPolicy]*\s+bypass",
                          "T1059.001",      "PowerShell encoded/obfuscated command execution",                3),
-    ("pwsh.exe",        r"-e[nc]{0,6}\s+[A-Za-z0-9+/=]{20,}|-nop.{0,30}-w.{0,20}hid",
+    ("pwsh.exe",        r"-e[nc]{0,6}\s+[A-Za-z0-9+/=]{20,}|-nop[rofile]*|-w[indowStyle]*\s+hid[den]*",
                          "T1059.001",      "PowerShell Core obfuscated execution",                          3),
+    # cmd.exe — was completely missing from BUILTIN_PATTERNS, falling through to
+    # the Layer 4 LOLBAS feed which requires >=2 fuzzy token matches (never met
+    # for simple test commands like  cmd /c echo).
+    ("cmd.exe",         r"/c\s+(powershell|certutil|mshta|regsvr32|rundll32|wscript|cscript|bitsadmin|curl|wget|echo)|/v:|/k\s|&&|\|\||>\s*[a-z]:\\|for\s+/[fl]",
+                         "T1059.003",      "cmd.exe used as LOLBin launcher or for command chaining",       2),
 ]
 
 # ─── High-risk parent processes ───────────────────────────────────────────────
@@ -170,8 +178,9 @@ class LolbasDetector:
     process context for kill-chain analysis.
     """
 
-    def __init__(self):
+    def __init__(self, webhook_url: str = ""):
         self._lolbas_patterns: list[dict] = []
+        self._webhook_url: str = webhook_url
         self._load_lolbas_feed()
 
     def _load_lolbas_feed(self):
@@ -314,6 +323,46 @@ class LolbasDetector:
                 finding["entropy_tokens"] = entropy_hits
                 finding["description"] += f" [+entropy corroboration: {entropy_hits[0]}]"
 
+        # ── Layer 6: Name-only fallback ──────────────────────────────────────
+        # WMI returns an empty CommandLine for short-lived processes because the
+        # OS recycles the PEB before WMI reads it.  Layers 3–5 all silently
+        # return None when cmdline is empty.  This fallback mirrors the
+        # name-only LOW-confidence alert that lolbin_detector already emits,
+        # ensuring LolbasDetector doesn't silently drop fast-exiting LOLBins.
+        # cmd.exe is excluded from trusted-parent suppression — it is spawned
+        # thousands of times per day by the OS itself.
+        #
+        # FIX: previously hardcoded base_score = 1 regardless of the binary's
+        # original pattern score.  mshta (score=3), regsvr32 (score=3), and
+        # rundll32 (score=3) were all downgraded to LOW even when there was no
+        # reason to doubt the detection.  Now base_score inherits the pattern's
+        # own score capped at 2 (MEDIUM) because without cmdline proof we cannot
+        # justify HIGH confidence — but we can justify MEDIUM for known-dangerous
+        # binaries like mshta whose presence alone is suspicious.
+        if finding is None and not cmdline_normalized:
+            for binary, _pat, mitre, desc, pattern_score in BUILTIN_PATTERNS:
+                b_lower = binary.lower()
+                if b_lower == "cmd.exe" and is_trusted_parent:
+                    continue   # OS-routine cmd.exe from services — skip noise
+                if name_lower == b_lower or name_lower.endswith(b_lower):
+                    finding = {
+                        "type":               "LOLBIN_ABUSE",
+                        "binary":             name_lower,
+                        "mitre":              mitre,
+                        "description":        desc + " [cmdline unavailable — WMI race]",
+                        "cmdline":            "",
+                        "cmdline_normalized": "",
+                        "source":             "name-only",
+                        "parent_name":        parent_name,
+                        "parent_pid":         parent_pid,
+                    }
+                    # Cap at MEDIUM: no cmdline means no pattern proof, but
+                    # high-score binaries (mshta=3, regsvr32=3) still warrant
+                    # more than LOW when spawned from a non-system parent.
+                    base_score       = min(2, pattern_score)
+                    detection_source = "name-only (no cmdline)"
+                    break
+
         if finding is None:
             return None
 
@@ -341,10 +390,19 @@ class LolbasDetector:
         return finding
 
     def _save_alert(self, finding: dict):
-        """Persists a LoLBin alert to the event_timeline table for chain correlation."""
+        """Persists a LoLBin alert to event_timeline AND fileless_alerts (for GUI display)."""
         now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        findings_summary = json.dumps([
+            {
+                "mitre":     finding["mitre"],
+                "indicator": finding["description"],
+                "confidence": finding.get("confidence", "MEDIUM"),
+                "source":    finding.get("detection_source", "built-in"),
+            }
+        ])
         try:
             with sqlite3.connect(utils.DB_FILE) as conn:
+                # event_timeline — used by chain correlator
                 conn.execute(
                     "INSERT INTO event_timeline (event_type, detail, pid, timestamp) "
                     "VALUES (?,?,?,?)",
@@ -361,8 +419,40 @@ class LolbasDetector:
                         now,
                     ),
                 )
+                # fileless_alerts — read by the Fileless/AMSI GUI page
+                conn.execute(
+                    "INSERT INTO fileless_alerts (source, findings, pid, timestamp) "
+                    "VALUES (?,?,?,?)",
+                    (
+                        f"LOLBIN_ABUSE [{finding['binary']}]",
+                        findings_summary,
+                        finding.get("parent_pid", 0),
+                        now,
+                    ),
+                )
         except Exception:
             pass  # Non-critical: operation continues regardless
+
+        # Fire webhook if configured
+        if self._webhook_url:
+            try:
+                confidence = finding.get("confidence", "MEDIUM")
+                icon = {"HIGH": "🔴", "MEDIUM": "🟠", "LOW": "🟡"}.get(confidence, "🟠")
+                utils.send_webhook_alert(
+                    self._webhook_url,
+                    f"{icon} LOLBin Abuse Detected — {confidence} Confidence",
+                    {
+                        "Binary":    finding.get("binary", "?"),
+                        "MITRE":     finding.get("mitre", "?"),
+                        "Technique": finding.get("description", "?")[:200],
+                        "Confidence": confidence,
+                        "Parent":    finding.get("parent_name", "unknown"),
+                        "Command":   (finding.get("cmdline") or "")[:300],
+                        "Source":    finding.get("detection_source", "built-in"),
+                    },
+                )
+            except Exception:
+                pass
 
     def format_alert(self, finding: dict) -> str:
         """Formats a LoLBin finding into a human-readable alert string."""

@@ -19,6 +19,7 @@ from modules.c2_fingerprint    import Ja3Monitor, FeodoMonitor, DgaMonitor
 from modules.intel_updater     import update_all, feed_status
 
 
+
 class CyberSentinelUI:
     def __init__(self):
         self.logic        = ScannerLogic()
@@ -447,7 +448,7 @@ if __name__ == "__main__":
 
     elif args.daemon:
         from modules.daemon_monitor import start_daemon
-        start_daemon(args.daemon)
+        start_daemon(args.daemon, webhook_url=self.logic.webhook_url)
 
     elif args.dashboard:
         import subprocess, sys

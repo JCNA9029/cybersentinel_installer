@@ -318,14 +318,17 @@ class ByovdDetector:
         seen: set[str] = set()
         try:
             import pythoncom, importlib, sys
-            pythoncom.CoInitialize()                  # ← CoInitialize FIRST
-            if 'wmi' in sys.modules:
-                importlib.reload(sys.modules['wmi'])
-            import wmi
-            c = wmi.WMI()
-            for drv in c.Win32_SystemDriver():
-                if drv.PathName:
-                    seen.add(drv.PathName.lower())
+            pythoncom.CoInitialize()
+            try:
+                if 'wmi' in sys.modules:
+                    importlib.reload(sys.modules['wmi'])
+                import wmi
+                c = wmi.WMI()
+                for drv in c.Win32_SystemDriver():
+                    if drv.PathName:
+                        seen.add(drv.PathName.lower())
+            finally:
+                pythoncom.CoUninitialize()
         except Exception:
             pass
 
@@ -333,18 +336,21 @@ class ByovdDetector:
         while not self._stop_monitor.is_set():
             time.sleep(10)
             try:
-                import pythoncom, wmi             # ← add pythoncom here too
-                pythoncom.CoInitialize()          # ← CoInitialize before WMI()
-                c = wmi.WMI()
-                for drv in c.Win32_SystemDriver():
-                    path = drv.PathName or ""
-                    if path.lower() not in seen:
-                        seen.add(path.lower())
-                        resolved = path.replace(
-                            "\\SystemRoot\\",
-                            os.environ.get("SystemRoot", "C:\\Windows") + "\\"
-                        )
-                        self.check_driver(resolved)
+                import pythoncom, wmi
+                pythoncom.CoInitialize()
+                try:
+                    c = wmi.WMI()
+                    for drv in c.Win32_SystemDriver():
+                        path = drv.PathName or ""
+                        if path.lower() not in seen:
+                            seen.add(path.lower())
+                            resolved = path.replace(
+                                "\\SystemRoot\\",
+                                os.environ.get("SystemRoot", "C:\\Windows") + "\\"
+                            )
+                            self.check_driver(resolved)
+                finally:
+                    pythoncom.CoUninitialize()
             except Exception:
                 pass
     # ─────────────────────────────────────────────

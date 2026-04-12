@@ -859,14 +859,23 @@ f"    Run: ollama create {self.llm_model} -f Modelfile"
                 )
             return
 
-        # ── Tier 1: Cloud Intelligence ──────────────────────────────────────
+       # ── Tier 1: Cloud Intelligence ──────────────────────────────────────
         self.log_event("\n[*] Initializing Cloud Intelligence...")
 
+        import sys as _sys
         gui = getattr(self, "gui_callbacks", None)
-
         selected_engine = "consensus"
-        if not self.headless_mode and not gui:
-            # CLI only — GUI uses the engine combo box pre-selected before scan
+
+        if gui and "engine" in gui:
+            # GUI mode — engine already selected via combo box, never prompt
+            selected_engine = gui["engine"]()
+        elif (
+            not self.headless_mode
+            and not gui
+            and hasattr(_sys.stdin, "isatty")
+            and _sys.stdin.isatty()
+        ):
+            # CLI interactive mode — prompt once
             print("[?] Select cloud engine:")
             print("  1. VirusTotal        2. AlienVault OTX")
             print("  3. MetaDefender      4. MalwareBazaar")
@@ -874,9 +883,7 @@ f"    Run: ollama create {self.llm_model} -f Modelfile"
             mapping = {"1": "virustotal", "2": "alienvault", "3": "metadefender",
                        "4": "malwarebazaar", "5": "consensus"}
             selected_engine = mapping.get(input("  Choice (1-5): ").strip(), "consensus")
-        elif gui and "engine" in gui:
-            # GUI pre-selected engine via the combo box on the Scan File page
-            selected_engine = gui["engine"]()
+        # else: daemon / headless / non-tty — stays "consensus" silently
 
         cloud_verdict = None
         cloud_context = "N/A"

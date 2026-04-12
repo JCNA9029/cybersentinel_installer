@@ -5,14 +5,14 @@
 # A single consolidated CRITICAL alert fires when a full chain completes within
 # the correlation window — replacing N fragmented low-signal alerts.
 # MITRE reference: https://attack.mitre.org/
-
 import json
 import sqlite3
 import datetime
 from . import utils
 from . import colors
 
-WINDOW_MINUTES = 10
+WINDOW_MINUTES    = 2   # correlation look-back (chain matching)
+RETENTION_MINUTES = 60  # how long events stay in event_timeline for the GUI Live Feed
 
 ATTACK_CHAINS = [
     {
@@ -71,7 +71,7 @@ class ChainCorrelator:
     """Correlates event sequences into high-confidence attack chain alerts."""
 
     def __init__(self):
-        self._alerted: set[str] = set()
+        pass
 
     def run_correlation(self) -> list[dict]:
         """Pull recent events and match against all chain definitions."""
@@ -82,25 +82,38 @@ class ChainCorrelator:
         seq       = [e["event_type"] for e in events]
         triggered = []
 
+        window_start = events[0]["timestamp"] if events else ""
         for chain in ATTACK_CHAINS:
             if not self._sequence_present(seq, chain["events"]):
                 continue
-            key = f"{chain['name']}_{datetime.datetime.now().strftime('%Y-%m-%d_%H:%M')}"
-            if key in self._alerted:
+            if self._already_alerted(f"{chain['name']}_{window_start}"):
                 continue
-            self._alerted.add(key)
             finding = {
                 "chain_name":  chain["name"],
                 "mitre":       chain["mitre"],
                 "severity":    chain["severity"],
                 "description": chain["description"],
-                "window_start": events[0]["timestamp"] if events else "",
+                "window_start": window_start,
             }
             self._persist(finding)
             self._print_alert(finding)
             triggered.append(finding)
 
+        self._prune_old_events()
         return triggered
+    
+    def _already_alerted(self, key: str) -> bool:
+        """Check DB instead of memory so restarts and new injections work correctly."""
+        chain_name, _, window_start = key.partition("_")
+        try:
+            with sqlite3.connect(utils.DB_FILE) as conn:
+                row = conn.execute(
+                    "SELECT id FROM chain_alerts WHERE chain_name=? AND window_start=? LIMIT 1",
+                    (chain_name, window_start)
+                ).fetchone()
+            return row is not None
+        except Exception:
+            return False
 
     # ── helpers ──────────────────────────────────────────────────────────────
 
@@ -116,6 +129,15 @@ class ChainCorrelator:
             return [{"event_type": r[0], "detail": r[1], "pid": r[2], "timestamp": r[3]} for r in rows]
         except Exception:
             return []
+    
+    def _prune_old_events(self):
+        cutoff = (datetime.datetime.now() - datetime.timedelta(minutes=RETENTION_MINUTES)
+                  ).strftime("%Y-%m-%d %H:%M:%S")
+        try:
+            with sqlite3.connect(utils.DB_FILE) as conn:
+                conn.execute("DELETE FROM event_timeline WHERE timestamp < ?", (cutoff,))
+        except Exception:
+            pass
 
     @staticmethod
     def _sequence_present(haystack: list[str], needle: list[str]) -> bool:
@@ -131,6 +153,17 @@ class ChainCorrelator:
         now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         try:
             with sqlite3.connect(utils.DB_FILE) as conn:
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS chain_alerts (
+                        id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                        chain_name   TEXT,
+                        mitre        TEXT,
+                        severity     TEXT,
+                        description  TEXT,
+                        window_start TEXT,
+                        timestamp    TEXT
+                    )
+                """)
                 conn.execute(
                     "INSERT INTO chain_alerts (chain_name,mitre,severity,description,window_start,timestamp) VALUES (?,?,?,?,?,?)",
                     (f["chain_name"], f["mitre"], f["severity"], f["description"], f["window_start"], now),

@@ -1,3 +1,4 @@
 # CyberSentinel Enterprise Exclusion List
 # Add directory or file paths below to bypass scanning.
 # Example: C:\Program Files\MySafeCompany\
+StoreDesktopExtension.exe  # Auto-added by analyst review on 2026-04-12 13:01
