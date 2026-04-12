@@ -184,20 +184,80 @@ class LolbasDetector:
         self._load_lolbas_feed()
 
     def _load_lolbas_feed(self):
-        """Parses the LOLBAS JSON feed into a fast-lookup structure."""
+        """
+        Parses the LOLBAS JSON feed into two structures:
+
+        self._lolbas_patterns  — list of per-command dicts for Layer 4 fuzzy matching
+        self._lolbas_enrich    — dict keyed by binary name for Layer 3 enrichment.
+                                 When a built-in pattern fires we look the binary up
+                                 here to add Category, Privileges, OS, paths and Sigma
+                                 links that the hardcoded tuple lacks.
+        """
         raw = load_lolbas()
+        self._lolbas_enrich: dict[str, dict] = {}
+
         for entry in raw:
             name = (entry.get("Name") or "").lower()
             if not name:
                 continue
+
+            full_paths = [
+                p.get("Path", "") for p in (entry.get("Full_Path") or [])
+                if p.get("Path")
+            ]
+            sigma_links = [
+                d.get("Sigma", "") for d in (entry.get("Detection") or [])
+                if d.get("Sigma")
+            ]
+            binary_description = entry.get("Description", "")
+
+            if name not in self._lolbas_enrich:
+                self._lolbas_enrich[name] = {
+                    "binary_description": binary_description,
+                    "full_paths":         full_paths,
+                    "sigma_links":        sigma_links,
+                    "commands":           [],
+                }
+            self._lolbas_enrich[name]["commands"].extend(entry.get("Commands") or [])
+
             for cmd in (entry.get("Commands") or []):
                 self._lolbas_patterns.append({
-                    "name":     name,
-                    "usecase":  cmd.get("Usecase", ""),
-                    "mitre":    cmd.get("MitreID", ""),
-                    "category": cmd.get("Category", ""),
-                    "command":  cmd.get("Command", ""),
+                    "name":       name,
+                    "usecase":    cmd.get("Usecase", ""),
+                    "mitre":      cmd.get("MitreID", ""),
+                    "category":   cmd.get("Category", ""),
+                    "privileges": cmd.get("Privileges", ""),
+                    "os":         cmd.get("OperatingSystem", ""),
+                    "command":    cmd.get("Command", ""),
                 })
+
+    def _enrich_from_feed(self, finding: dict, matched_cmd: dict | None = None) -> dict:
+        """
+        Looks up the detected binary in self._lolbas_enrich and adds the
+        feed metadata (Category, Privileges, OS, paths, Sigma links) to the
+        finding dict in-place.  Called after both Layer 3 and Layer 4 matches.
+        """
+        name   = finding.get("binary", "").lower()
+        enrich = getattr(self, "_lolbas_enrich", {}).get(name)
+        if not enrich:
+            return finding
+
+        if matched_cmd is None:
+            mitre = finding.get("mitre", "")
+            cmds  = enrich["commands"]
+            matched_cmd = next(
+                (c for c in cmds if c.get("MitreID", "") == mitre),
+                cmds[0] if cmds else {}
+            )
+
+        finding["category"]           = matched_cmd.get("Category", "—")
+        finding["privileges"]         = matched_cmd.get("Privileges", "—")
+        finding["os"]                 = matched_cmd.get("OperatingSystem", "—")
+        finding["binary_description"] = enrich["binary_description"]
+        finding["full_paths"]         = enrich["full_paths"]
+        finding["sigma_links"]        = enrich["sigma_links"][:3]
+        finding["lolbas_usecase"]     = matched_cmd.get("Usecase", "—")
+        return finding
 
     def check_process(
         self,
@@ -263,6 +323,9 @@ class LolbasDetector:
                         "parent_name": parent_name,
                         "parent_pid":  parent_pid,
                     }
+                    # Enrich with Category, Privileges, OS, paths, Sigma links
+                    # from intel/lolbas.json — the built-in tuple only has MITRE + desc
+                    self._enrich_from_feed(finding)
                     base_score = pattern_score
                     detection_source = "built-in pattern"
                     break
@@ -288,6 +351,16 @@ class LolbasDetector:
                             "parent_name": parent_name,
                             "parent_pid":  parent_pid,
                         }
+                        # Feed match already has the command dict — pass it directly
+                        # so _enrich_from_feed doesn't have to guess by MITRE ID
+                        _raw_cmd = {
+                            "Category":        entry.get("category", ""),
+                            "Privileges":      entry.get("privileges", ""),
+                            "OperatingSystem": entry.get("os", ""),
+                            "Usecase":         entry.get("usecase", ""),
+                            "MitreID":         entry.get("mitre", ""),
+                        }
+                        self._enrich_from_feed(finding, matched_cmd=_raw_cmd)
                         base_score = 1  # Feed match is lower confidence than built-in
                         detection_source = "LOLBAS feed"
                         break
@@ -458,6 +531,32 @@ class LolbasDetector:
         """Formats a LoLBin finding into a human-readable alert string."""
         confidence = finding.get("confidence", "MEDIUM")
         icon = {"HIGH": "🔴", "MEDIUM": "🟠", "LOW": "🟡"}.get(confidence, "🟠")
+
+        # ── intel/lolbas.json enrichment fields ──────────────────────────────
+        category   = finding.get("category", "")
+        privileges = finding.get("privileges", "")
+        os_info    = finding.get("os", "")
+        paths      = finding.get("full_paths", [])
+        sigmas     = finding.get("sigma_links", [])
+        bin_desc   = finding.get("binary_description", "")
+
+        intel_lines = ""
+        if category or privileges or os_info:
+            intel_lines += f"\n  {'─'*61}"
+            if bin_desc:
+                intel_lines += f"\n  BinDesc : {bin_desc}"
+            if category:
+                intel_lines += f"\n  Category: {category}"
+            if privileges:
+                intel_lines += f"\n  Privs   : {privileges}"
+            if os_info:
+                intel_lines += f"\n  OS      : {os_info}"
+            if paths:
+                intel_lines += f"\n  Paths   : {'; '.join(paths[:2])}"
+            if sigmas:
+                intel_lines += f"\n  Sigma   : {sigmas[0]}"
+            intel_lines += f"\n  {'─'*61}"
+
         parent_info = ""
         if finding.get("parent_name"):
             parent_info = (
@@ -483,6 +582,7 @@ class LolbasDetector:
             f"  Source  : {finding.get('detection_source', finding.get('source', ''))}\n"
             f"  CmdLine : {cmdline_display}"
             f"{norm_display}"
+            f"{intel_lines}"
             f"{parent_info}"
             f"{entropy_info}\n"
             f"{'='*65}"

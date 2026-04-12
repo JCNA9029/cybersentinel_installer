@@ -25,15 +25,25 @@ class CyberSentinelUI:
         self.logic        = ScannerLogic()
         self.byovd        = ByovdDetector()
         self.lolbas       = LolbasDetector()
-        self.correlator   = ChainCorrelator()
+        _wh = self.logic._webhooks()
+        self.correlator._webhook_url  = self.logic.webhook_url
+        self.correlator._webhooks     = _wh
+        self.byovd.webhook_url        = self.logic.webhook_url
+        self.feodo._webhook_url       = self.logic.webhook_url
+        self.feodo._webhooks          = _wh
+        self.dga._webhook_url         = self.logic.webhook_url
+        self.dga._webhooks            = _wh
+        self.ja3._webhook_url         = self.logic.webhook_url
+        self.ja3._webhooks            = _wh
         self.baseline     = BaselineEngine()
         self.amsi         = AmsiMonitor()
         self.lolbin       = LolbinDetector()
         self.fileless     = FilelessMonitor(correlator=self.correlator)
         self.amsi_scanner = AmsiScanner()
-        self.feodo        = FeodoMonitor()
-        self.dga          = DgaMonitor()
-        self.ja3          = Ja3Monitor()
+        _wh = self.logic.webhook_url
+        self.feodo        = FeodoMonitor(webhook_url=_wh)
+        self.dga          = DgaMonitor(webhook_url=_wh)
+        self.ja3          = Ja3Monitor(webhook_url=_wh)
         # Start background C2 monitors
         self.feodo.start()
         self.ja3.start()
@@ -55,6 +65,10 @@ class CyberSentinelUI:
         self.logic.api_keys    = config.get("api_keys", {})
         self.logic.webhook_url = config.get("webhook_url", "")
         self.logic.llm_model   = config.get("llm_model", "qwen2.5:3b")
+        # Wire webhook into the chain correlator now that config is loaded.
+        # ChainCorrelator is constructed before setup_api() runs, so we patch
+        # the URL in rather than reconstructing the whole object.
+        self.correlator._webhook_url = self.logic.webhook_url
         if self.logic.api_keys:
             colors.success(f"[+] Configuration loaded.  LLM: {self.logic.llm_model}")
         else:
@@ -448,7 +462,7 @@ if __name__ == "__main__":
 
     elif args.daemon:
         from modules.daemon_monitor import start_daemon
-        start_daemon(args.daemon, webhook_url=self.logic.webhook_url)
+        start_daemon(args.daemon, webhook_url=self.logic.webhook_url, webhooks=self.logic._webhooks())
 
     elif args.dashboard:
         import subprocess, sys

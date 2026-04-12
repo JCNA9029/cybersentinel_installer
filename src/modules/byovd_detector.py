@@ -67,10 +67,12 @@ class ByovdDetector:
             for driver in raw:
                 name        = (driver.get("Tags") or [""])[0] if driver.get("Tags") else ""
                 category    = driver.get("Category", "")
-                cve_list    = driver.get("CVE") or []
+                cve_list  = driver.get("CVE") or []
+                mitre_id  = driver.get("MitreID", "")
                 cves        = ", ".join(cve_list) if isinstance(cve_list, list) else str(cve_list)
-                description = driver.get("Commands", [{}])[0].get("Description", "Known vulnerable driver")
-                filename    = (driver.get("KnownFilenames") or [""])[0] if driver.get("KnownFilenames") else name
+                cmds = driver.get("Commands") or {}
+                description = cmds.get("Usecase") or cmds.get("Description") or "Known vulnerable driver"
+                filename = (driver.get("Tags") or [""])[0] 
                 vendor      = driver.get("Vendor", "Unknown")
                 known_tools = driver.get("KnownMalware", [])
 

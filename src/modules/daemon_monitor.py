@@ -312,7 +312,7 @@ def _run_correlator(correlator):
 #  Entry point
 # ─────────────────────────────────────────────────────────────────────────────
 
-def start_daemon(target_dir: str, webhook_url: str = ""):
+def start_daemon(target_dir: str, webhook_url: str = "", webhooks: dict | None = None):
     """Starts the headless daemon monitor on the specified folder path."""
     if not os.path.exists(target_dir):
         print(f"\n[-] CRITICAL: Folder '{target_dir}' does not exist.")
@@ -327,7 +327,7 @@ def start_daemon(target_dir: str, webhook_url: str = ""):
     feodo      = FeodoMonitor()
     dga        = DgaMonitor()
     ja3        = Ja3Monitor()
-    correlator = ChainCorrelator()
+    correlator = ChainCorrelator(webhook_url=webhook_url, webhooks=webhooks or {})
     baseline   = BaselineEngine()
     amsi       = AmsiMonitor()
     lolbin     = LolbinDetector(webhook_url=webhook_url)

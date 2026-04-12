@@ -114,7 +114,10 @@ class ScannerLogic:
     def __init__(self):
         config = utils.load_config()
         self.api_keys      = config.get("api_keys", {})
-        self.webhook_url   = config.get("webhook_url", "")
+        self.webhook_url      = config.get("webhook_url", "")
+        self.webhook_critical = config.get("webhook_critical", "")
+        self.webhook_high     = config.get("webhook_high", "")
+        self.webhook_chains   = config.get("webhook_chains", "")
         # Model is hardcoded — CyberSentinel uses its own fine-tuned domain analyst.
         # Do NOT make this configurable; the model is purpose-built for this pipeline.
         self.llm_model = config.get("llm_model", "cybersentinel-analyst")
@@ -123,7 +126,7 @@ class ScannerLogic:
         self.headless_mode = False
         # Daemon overwrites these references with its shared instances.
         # In CLI mode they still function independently.
-        self.correlator    = ChainCorrelator()
+        self.correlator    = ChainCorrelator(webhook_url=self.webhook_url, webhooks=self._webhooks())
         self.baseline      = BaselineEngine()
         utils.init_db()
         # R1 Fix: Prune records older than 90 days at startup to prevent
@@ -563,20 +566,32 @@ f"    Run: ollama create {self.llm_model} -f Modelfile"
                 except Exception:
                     pass  # Non-critical — learning degrades gracefully without features
 
-        # Step 1: Webhook — always fires first
-        if self.webhook_url:
+         # Step 1: Webhook — always fires first
+        if self.webhook_url or self.webhook_critical:
             import socket as _sock
             import datetime as _dt
-            ok = utils.send_webhook_alert(
-                self.webhook_url,
-                title="Threat Detected on Endpoint",
-                details={
-                    "File":    fname,
-                    "SHA256":  sha256,
-                    "Source":  threat_source,
-                    "Verdict": verdict,
-                    "Host":    _sock.gethostname(),
-                    "Time":    _dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            # Derive SOC severity from verdict string for correct channel routing
+            _v = (verdict or "").upper()
+            if "CRITICAL" in _v:
+                _severity = "CRITICAL"
+            elif "MALICIOUS" in _v or "HIGH" in _v:
+                _severity = "CRITICAL"   # malicious file = on-call level
+            elif "SUSPICIOUS" in _v or "MEDIUM" in _v:
+                _severity = "HIGH"
+            else:
+                _severity = "MEDIUM"
+            ok = utils.route_webhook_alert(
+                self._webhooks(),
+                _severity,
+                "🚨 Threat Detected on Endpoint",
+                {
+                    "File":     fname,
+                    "SHA256":   sha256,
+                    "Source":   threat_source,
+                    "Verdict":  verdict,
+                    "Severity": _severity,
+                    "Host":     _sock.gethostname(),
+                    "Time":     _dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                 },
             )
             status = "OK" if ok else "FAILED"
@@ -701,6 +716,15 @@ f"    Run: ollama create {self.llm_model} -f Modelfile"
             prompt_analyst_feedback(sha256, fname, verdict,
                                     file_path=file_path or "",
                                     prefetched_features_json=prefetched_fj)
+    
+    def _webhooks(self) -> dict:
+     """Returns the webhook routing dict for route_webhook_alert."""
+     return {
+        "webhook_url":      self.webhook_url,
+        "webhook_critical": self.webhook_critical,
+        "webhook_high":     self.webhook_high,
+        "webhook_chains":   self.webhook_chains,
+    }
 
     # ─────────────────────────────────────────────
     #  ML THREAT HANDLER
@@ -1010,11 +1034,28 @@ f"    Run: ollama create {self.llm_model} -f Modelfile"
         score_pct = ml_result["score"]
 
         if ml_verdict == "CRITICAL RISK":
-            colors.critical(f"[!] TIER 2 VERDICT: {ml_verdict} (Score: {score_pct:.2%})")
+            self._handle_critical_ml_threat(file_path, sha256, file_size_mb, ml_result)
         elif ml_verdict == "SUSPICIOUS":
-            colors.warning(f"[!] TIER 2 VERDICT: {ml_verdict} (Score: {score_pct:.2%})")
+            colors.warning("[!] Anomalies detected but below isolation threshold. Sandbox testing advised.")
+            if self.webhook_url or self.webhook_high:
+                import socket as _sock, datetime as _dt
+                utils.route_webhook_alert(
+                    self._webhooks(),
+                    "HIGH",
+                    "⚠️ Suspicious File Detected",
+                    {
+                        "File":     os.path.basename(file_path) if file_path else "Unknown",
+                        "SHA256":   sha256,
+                        "Verdict":  "SUSPICIOUS",
+                        "Score":    f"{ml_result['score']:.2%}",
+                        "Severity": "HIGH",
+                        "Host":     _sock.gethostname(),
+                        "Time":     _dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                        "Action":   "Sandbox testing advised",
+                    },
+                )
         else:
-            colors.success(f"[+] TIER 2 VERDICT: {ml_verdict} (Score: {score_pct:.2%})")
+            colors.success("[+] File structure aligns with safe parameters.")
 
         self.session_log.append(f"[*] TIER 2: {ml_verdict} ({score_pct:.2%})")
         ml_context = f"{filename} | Tier 2: Local ML ({score_pct:.2%})"
@@ -1200,6 +1241,20 @@ f"    Run: ollama create {self.llm_model} -f Modelfile"
         if any_malicious:
             colors.critical(f"\n[!] FINAL VERDICT: MALICIOUS — {itype} flagged by one or more engines")
             self.session_log.append(f"[!] {itype} VERDICT: MALICIOUS — {indicator}")
+            if self.webhook_url or self.webhook_critical:
+                import socket as _sock, datetime as _dt
+                utils.route_webhook_alert(
+                    self._webhooks(),
+                    "CRITICAL",
+                    f"🚨 Malicious {itype} Detected",
+                    {
+                        itype:      indicator,
+                        "Verdict":  "MALICIOUS",
+                        "Severity": "CRITICAL",
+                        "Host":     _sock.gethostname(),
+                        "Time":     _dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    },
+                )
         else:
             colors.success(f"\n[+] FINAL VERDICT: SAFE — No engines flagged this {itype.lower()}")
             self.session_log.append(f"[+] {itype} VERDICT: SAFE — {indicator}")
@@ -1241,6 +1296,22 @@ f"    Run: ollama create {self.llm_model} -f Modelfile"
                     f"[!] HASH FLAGGED: {file_hash} — "
                     "Scan the file directly to quarantine it."
                 )
+                if self.webhook_url or self.webhook_critical:
+                    import socket as _sock, datetime as _dt
+                    utils.route_webhook_alert(
+                        self._webhooks(),
+                        "CRITICAL",
+                        "🚨 Malicious Hash — Cache Hit",
+                        {
+                            "Hash":     file_hash,
+                            "Verdict":  cached["verdict"],
+                            "Source":   cached["source"],
+                            "Severity": "CRITICAL",
+                            "Host":     _sock.gethostname(),
+                            "Time":     _dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                            "Action":   "Scan the file directly to quarantine it",
+                        },
+                    )
             return
 
         self.log_event("[*] Running Smart Consensus (concurrent)...")
@@ -1256,6 +1327,22 @@ f"    Run: ollama create {self.llm_model} -f Modelfile"
                 "    via Scan File to trigger quarantine and containment."
             )
             self.session_log.append(f"[!] HASH VERDICT: MALICIOUS — {cloud_context}")
+            if self.webhook_url or self.webhook_critical:
+                import socket as _sock, datetime as _dt
+                utils.route_webhook_alert(
+                    self._webhooks(),
+                    "CRITICAL",
+                    "🚨 Malicious Hash Confirmed by Cloud",
+                    {
+                        "Hash":     file_hash,
+                        "Verdict":  "MALICIOUS",
+                        "Source":   cloud_context,
+                        "Severity": "CRITICAL",
+                        "Host":     _sock.gethostname(),
+                        "Time":     _dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                        "Action":   "Scan the file directly to quarantine it",
+                    },
+                )
         else:
             colors.success(f"\n[+] FINAL VERDICT: SAFE — {cloud_context}")
             self.session_log.append(f"[+] HASH VERDICT: SAFE")

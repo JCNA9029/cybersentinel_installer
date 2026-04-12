@@ -100,14 +100,14 @@ class FeodoMonitor:
     MITRE: T1071 (Application Layer Protocol), T1095 (Non-Application Layer Protocol)
     """
 
-    def __init__(self, poll_interval: float = 5.0):
+    def __init__(self, poll_interval: float = 5.0, webhook_url: str = "", webhooks: dict | None = None):
         self.poll_interval   = poll_interval
+        self._webhook_url    = webhook_url
+        self._webhooks       = webhooks or {"webhook_url": webhook_url}
         self._blocklist: set[str] = load_feodo_blocklist()
         self._seen: set[tuple]    = set()
         self._running             = False
         self._thread: threading.Thread | None = None
-        if self._blocklist:
-            print(f"[*] Feodo Tracker: {len(self._blocklist)} C2 IPs loaded.")
 
     def start(self):
         """Starts the background monitoring thread."""
@@ -157,6 +157,19 @@ class FeodoMonitor:
             }
             self._persist(finding)
             self._print_alert(finding)
+            if self._webhook_url or self._webhooks.get("webhook_critical"):
+                utils.route_webhook_alert(
+                    self._webhooks,
+                    "CRITICAL",
+                    "🌐 C2 Connection — Feodo Tracker Match",
+                    {
+                        "Remote IP":  f"{finding['remote_ip']}:{finding['remote_port']}",
+                        "Process":    f"{finding['process_name']} (PID {finding['pid']})",
+                        "Path":       finding["process_path"],
+                        "MITRE":      "T1071 / T1095 — C2 over Application/Non-Application Layer",
+                        "Severity":   "CRITICAL",
+                    },
+                )
 
     def check_ip(self, ip: str) -> bool:
         """Checks a single IP address against the Feodo C2 blocklist. Returns a finding dict or None."""
@@ -207,7 +220,9 @@ class DgaMonitor:
     BURST_THRESHOLD   = 5       # N suspicious queries within WINDOW_SECS
     WINDOW_SECS       = 60
 
-    def __init__(self):
+    def __init__(self, webhook_url: str = "", webhooks: dict | None = None):
+        self._webhook_url           = webhook_url
+        self._webhooks              = webhooks or {"webhook_url": webhook_url}
         self._window: list[tuple]   = []   # (datetime, domain, entropy)
         self._alerted: set[str]     = set()
 
@@ -234,6 +249,20 @@ class DgaMonitor:
             }
             self._alerted.add(fqdn)
             self._persist(finding)
+            if self._webhook_url or self._webhooks.get("webhook_high"):
+                utils.route_webhook_alert(
+                    self._webhooks,
+                    "HIGH",
+                    "🔁 DGA Beaconing Detected",
+                    {
+                        "Domain":         finding["domain"],
+                        "Entropy":        str(finding["entropy"]),
+                        "Burst Count":    str(finding["burst_count"]),
+                        "Sample Domains": ", ".join(finding.get("sample_domains", [])[:5]),
+                        "MITRE":          "T1568.002 — Dynamic Resolution: DGA",
+                        "Severity":       "HIGH",
+                    },
+                )
             return finding
         return None
 
@@ -315,7 +344,9 @@ class Ja3Monitor:
     MITRE: T1071.001 (Web Protocols)
     """
 
-    def __init__(self):
+    def __init__(self, webhook_url: str = "", webhooks: dict | None = None):
+        self._webhook_url         = webhook_url
+        self._webhooks            = webhooks or {"webhook_url": webhook_url}
         self._blocklist: set[str] = load_ja3_blocklist()
         self._available           = self._check_scapy()
         self._running             = False
@@ -372,6 +403,18 @@ class Ja3Monitor:
                                 )
                         except Exception:
                             pass  # Non-critical: operation continues regardless
+                        if self._webhook_url or self._webhooks.get("webhook_high"):
+                            utils.route_webhook_alert(
+                                self._webhooks,
+                                "HIGH",
+                                "🔒 Malicious TLS Fingerprint (JA3)",
+                                {
+                                    "JA3 Hash": ja3,
+                                    "Flow":     f"{src} → {dst}",
+                                    "MITRE":    "T1071.001 — Web Protocols (TLS C2)",
+                                    "Severity": "HIGH",
+                                },
+                            )
             sniff(filter="tcp port 443 or tcp port 8443", prn=cb, store=False,
                   stop_filter=lambda _: not self._running)
         except Exception as e:

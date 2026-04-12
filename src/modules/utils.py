@@ -146,6 +146,9 @@ def load_config() -> dict:
     config_data = {
         "api_keys":            {},
         "webhook_url":         "",
+        "webhook_critical":    "",
+        "webhook_high":        "",
+        "webhook_chains":      "",
         "llm_model":           "qwen2.5:3b",
         "high_priority_paths": [],
     }
@@ -164,6 +167,9 @@ def load_config() -> dict:
 
         config_data["api_keys"]            = {k: decrypt_key(v) for k, v in keys.items() if v}
         config_data["webhook_url"]          = decrypt_key(data.get("webhook_url", ""))
+        config_data["webhook_critical"]     = decrypt_key(data.get("webhook_critical", ""))
+        config_data["webhook_high"]         = decrypt_key(data.get("webhook_high", ""))
+        config_data["webhook_chains"]       = decrypt_key(data.get("webhook_chains", ""))
         # LLM model and priority paths are stored in plain text — not sensitive
         config_data["llm_model"]            = data.get("llm_model", "qwen2.5:3b") or "qwen2.5:3b"
         hp = data.get("high_priority_paths", [])
@@ -179,6 +185,9 @@ def save_config(
     webhook_url:         str       = "",
     llm_model:           str       = "qwen2.5:3b",
     high_priority_paths: list[str] | None = None,
+    webhook_critical:    str       = "",
+    webhook_high:        str       = "",
+    webhook_chains:      str       = "",
 ) -> bool:
     """Encrypts all API keys with Fernet and writes them + settings to disk."""
     try:
@@ -188,6 +197,9 @@ def save_config(
                 {
                     "api_keys":            encrypted_keys,
                     "webhook_url":          encrypt_key(webhook_url),
+                    "webhook_critical":     encrypt_key(webhook_critical),
+                    "webhook_high":         encrypt_key(webhook_high),
+                    "webhook_chains":       encrypt_key(webhook_chains),
                     "llm_model":            llm_model or "qwen2.5:3b",
                     # Plain text — not sensitive; used by daemon for scan prioritization
                     "high_priority_paths":  high_priority_paths or [],
@@ -304,6 +316,29 @@ def send_webhook_alert(webhook_url: str, title: str, details: dict) -> bool:
         print(f"[-] Webhook: Unexpected error — {e}")
         return False
 
+def route_webhook_alert(
+    webhooks: dict,
+    severity: str,
+    title: str,
+    details: dict,
+    is_chain: bool = False,
+) -> bool:
+    """
+    Routes an alert to the correct SOC channel based on severity.
+    Falls back to webhook_url if the specific channel is not configured.
+    """
+    url = ""
+    if is_chain and webhooks.get("webhook_chains"):
+        url = webhooks["webhook_chains"]
+    elif severity == "CRITICAL" and webhooks.get("webhook_critical"):
+        url = webhooks["webhook_critical"]
+    elif severity == "HIGH" and webhooks.get("webhook_high"):
+        url = webhooks["webhook_high"]
+
+    if not url:
+        url = webhooks.get("webhook_url", "")
+
+    return send_webhook_alert(url, title, details)
 
 # ─────────────────────────────────────────────
 #  SECTION 4: NETWORK & FILE UTILITIES
