@@ -15,6 +15,8 @@ import sqlite3
 import datetime
 import threading
 import json
+import ctypes
+ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("CyberSentinel.GUI")
 
 # ── Redirect stdout/stderr when running under pythonw.exe ────────────────────
 # pythonw.exe (used by the desktop shortcut) sets sys.stdout and sys.stderr to

@@ -573,42 +573,67 @@ def step_models():
     log("=== STEP: Downloading AI models from Google Drive ===")
     MODELS_DIR.mkdir(parents=True, exist_ok=True)
 
-    # ── Skip if models already exist ─────────────────────────────────────────
-    # Check for both the GGUF and the LightGBM model. If both are present and
-    # non-empty, there is no need to re-download 4.5 GB from Google Drive.
-    gguf_file  = MODELS_DIR / "CyberSentinel-Analyst.gguf"
-    lgbm_file  = MODELS_DIR / "CyberSentinel_v2.model"
+    gguf_file = MODELS_DIR / "CyberSentinel-Analyst.gguf"
+    lgbm_file = MODELS_DIR / "CyberSentinel_v2.model"
 
     if gguf_file.exists() and gguf_file.stat().st_size > 0 \
        and lgbm_file.exists() and lgbm_file.stat().st_size > 0:
         log("AI models already present — skipping download.")
         return
 
-    # gdown is already installed by step_deps; no need to re-install here.
+    # Ensure gdown is importable (step_deps should have installed it already,
+    # but re-installing here is fast and prevents cryptic ImportError crashes).
+    try:
+        import gdown  # noqa: F401
+    except ImportError:
+        log("gdown not found — installing now...")
+        subprocess.run(
+            [sys.executable, "-m", "pip", "install", "--upgrade", "gdown"],
+            check=True, text=True, encoding="utf-8"
+        )
+
+    import gdown
+
     url = f"https://drive.google.com/drive/folders/{GDRIVE_FOLDER}"
 
     for attempt in range(1, 4):
         log(f"Downloading model folder (attempt {attempt}/3) …")
-        result = subprocess.run(
-            [sys.executable, "-m", "gdown", "--folder", url,
-             "-O", str(MODELS_DIR), "--remaining-ok"],
-            text=True, capture_output=True, encoding="utf-8", errors="replace"
-        )
-        log(result.stdout)
-        if result.returncode == 0:
-            log("Model download complete.")
-            return
-        log(f"Download attempt {attempt} failed:\n{result.stderr}", "WARN")
-        time.sleep(5)
+        try:
 
+            downloaded = gdown.download_folder(
+                url=url,
+                output=str(MODELS_DIR),
+                quiet=False,
+            )
+            if downloaded is None or len(downloaded) == 0:
+                raise RuntimeError("gdown returned no files.")
+
+            # Verify the two critical files actually landed
+            if gguf_file.exists() and gguf_file.stat().st_size > 0 \
+               and lgbm_file.exists() and lgbm_file.stat().st_size > 0:
+                log("Model download complete and verified.")
+                return
+
+            raise RuntimeError(
+                "Download reported success but model files are missing or empty. "
+                f"Expected:\n  {gguf_file}\n  {lgbm_file}"
+            )
+
+        except Exception as exc:
+            log(f"Download attempt {attempt} failed: {exc}", "WARN")
+            if attempt < 3:
+                wait = 5 * attempt  # 5s, 10s — exponential-ish backoff
+                log(f"Retrying in {wait}s …")
+                time.sleep(wait)
+
+    flag_path = MODELS_DIR.parent / "model_download_failed.flag"
+    flag_path.write_text("1", encoding="utf-8")
     fail(
-        "Failed to download AI models after 3 attempts.  "
+        "Failed to download AI models after 3 attempts. "
         "Please check your internet connection or download the models folder manually "
-        f"from: https://drive.google.com/drive/folders/{GDRIVE_FOLDER}  "
+        f"from: https://drive.google.com/drive/folders/{GDRIVE_FOLDER} "
         f"and place the contents in {MODELS_DIR}."
     )
-
-
 # ═══════════════════════════════════════════════════════════════
 #  STEP: configure
 # ═══════════════════════════════════════════════════════════════

@@ -53,6 +53,7 @@ english.InstallingThrember=Installing EMBER2024 (thrember)...
 english.InstallingNpcap=Installing Npcap packet-capture driver (required for JA3 TLS monitor)...
 english.NpcapMissing=Npcap was not installed on your system.%n%nThe JA3 TLS fingerprint monitor (which detects C2 beaconing via TLS fingerprints) will be disabled until Npcap is installed.%n%nTo enable it later, download and install Npcap from:%nhttps://npcap.com/#download%n%nEverything else in CyberSentinel works without Npcap.
 english.InstallingOllama=Installing Ollama...
+english.ModelDownloadFailed=AI model download failed.%n%nCyberSentinel has been installed, but the AI Analyst model could not be downloaded from Google Drive.%n%nTo fix this:%n  1. Check your internet connection.%n  2. Re-run the installer, or manually run:%n       python installer_tools\install_helper.py --step models --install-dir "C:\CyberSentinel"%n%nAll other features work without the AI model.
 english.DownloadingModels=Downloading AI models (~4.5 GB) — please wait, this may take several minutes...
 english.ImportingLLM=Importing CyberSentinel AI Analyst model into Ollama...
 english.ConfiguringApp=Configuring CyberSentinel...
@@ -89,11 +90,11 @@ Source: "installer_tools\check_python.bat";    DestDir: "{app}\installer_tools";
 [Icons]
 ; Desktop shortcut
 ; {reg:...} reads the exact Python path saved during install — never picks up a wrong Python from PATH.
-Name: "{userdesktop}\CyberSentinel GUI"; Filename: "{reg:HKLM\SOFTWARE\{#MyAppName},PythonwExe|pythonw.exe}"; Parameters: """{app}\gui.py"""; WorkingDir: "{app}"; IconFilename: "{app}\assets\icon.ico"; Tasks: desktopicon
+Name: "{userdesktop}\CyberSentinel GUI"; Filename: "{reg:HKLM\SOFTWARE\{#MyAppName},PythonwExe|pythonw.exe}"; Parameters: """{app}\gui.py"""; WorkingDir: "{app}"; IconFilename: "{app}\assets\icon.ico"; AppUserModelID: "CyberSentinel.GUI"; Tasks: desktopicon
 
 ; Start Menu group
 Name: "{group}\CyberSentinel GUI";        Filename: "{reg:HKLM\SOFTWARE\{#MyAppName},PythonwExe|pythonw.exe}"; Parameters: """{app}\gui.py""";                                                                          WorkingDir: "{app}"; IconFilename: "{app}\assets\icon.ico"; Tasks: startmenuicon
-Name: "{group}\CyberSentinel CLI";        Filename: "cmd.exe"; Parameters: "/k python.exe ""{app}\CyberSentinel.py"" --help"; WorkingDir: "{app}"; Tasks: startmenuicon
+Name: "{group}\CyberSentinel GUI";        Filename: "{reg:HKLM\SOFTWARE\{#MyAppName},PythonwExe|pythonw.exe}"; Parameters: """{app}\gui.py"""; WorkingDir: "{app}"; IconFilename: "{app}\assets\icon.ico"; AppUserModelID: "CyberSentinel.GUI"; Tasks: startmenuicon
 Name: "{group}\CyberSentinel Dashboard";  Filename: "cmd.exe"; Parameters: "/k python.exe ""{app}\dashboard.py"""; WorkingDir: "{app}"; Tasks: startmenuicon
 Name: "{group}\Uninstall CyberSentinel";  Filename: "{uninstallexe}"; Tasks: startmenuicon
 
@@ -536,7 +537,27 @@ begin
       );
     end;
   end;
+  // ── Model download failure warning ────────────────────────────────────
+    // install_helper.py::step_models() writes this flag when the GDrive
+    // download fails, so the user knows the AI Analyst will be unavailable.
+    if FileExists(ExpandConstant('{app}\model_download_failed.flag')) then begin
+      DeleteFile(ExpandConstant('{app}\model_download_failed.flag'));
+      MsgBox(
+        'AI model download failed.' + #13#10 + #13#10 +
+        'CyberSentinel has been installed, but the AI Analyst model could ' +
+        'not be downloaded from Google Drive.' + #13#10 + #13#10 +
+        'To fix this:' + #13#10 +
+        '  1. Check your internet connection.' + #13#10 +
+        '  2. Re-run the installer, or manually run:' + #13#10 +
+        '       python installer_tools\install_helper.py --step models' +
+        ' --install-dir "C:\CyberSentinel"' + #13#10 + #13#10 +
+        'All other features (file scanning, ML engine, network monitor) ' +
+        'work normally without the AI model.',
+        mbError, MB_OK
+      );
+    end;
 end;
+
 
 // ── Uninstall: offer to remove AI models ─────────────────────
 function InitializeUninstall: Boolean;
