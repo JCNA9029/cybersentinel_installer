@@ -20,7 +20,7 @@ pandas>=2.0.0           # Evaluation harness result tabulation
 shap>=0.44.0            # Real-time per-scan feature attribution
 
 # ── AI Analyst (Tier 3) ───────────────────────────────────────
-ollama>=0.1.0           # Local LLM interface (run: ollama pull qwen2.5:3b)
+ollama>=0.1.0           # Local LLM interface
 
 # ── SOC Dashboard ─────────────────────────────────────────────
 flask>=3.0.0            # Web dashboard (dashboard.py)

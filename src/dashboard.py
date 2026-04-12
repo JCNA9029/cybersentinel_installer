@@ -1,6 +1,4 @@
 # dashboard.py — CyberSentinel SOC Dashboard v1
-# Run: python dashboard.py   OR   python CyberSentinel.py --dashboard
-# Opens at http://127.0.0.1:5000
 
 import sqlite3
 import os
@@ -12,7 +10,6 @@ app = Flask(__name__)
 # This fixes the blank-dashboard bug where dashboard and CLI used different DBs.
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DB = os.path.join(BASE_DIR, "threat_cache.db")
-
 
 # ─── Database helper ──────────────────────────────────────────────────────────
 
@@ -30,7 +27,6 @@ def _q(sql, params=()):
 def _cnt(sql, params=()):
     rows = _q(sql, params)
     return rows[0]["c"] if rows else 0
-
 
 # ─── HTML ─────────────────────────────────────────────────────────────────────
 
@@ -353,7 +349,6 @@ setInterval(loadAll, 30000);
 </html>
 """
 
-
 # ─── API Routes ───────────────────────────────────────────────────────────────
 
 @app.route("/")
@@ -435,7 +430,6 @@ def api_timeline():
     """Returns the shared event timeline entries used by chain correlation."""
     return jsonify(_q(
         "SELECT event_type, detail, pid, timestamp FROM event_timeline ORDER BY timestamp DESC LIMIT 200"))
-
 
 # ─── Entry point ──────────────────────────────────────────────────────────────
 

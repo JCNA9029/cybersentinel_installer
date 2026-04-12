@@ -1,12 +1,4 @@
 # modules/lolbin_detector.py — Feature 1: Living-off-the-Land Binary Abuse Detection
-#
-# Closes the most critical blind spot in the WMI daemon: CyberSentinel previously
-# excluded ALL c:\windows binaries. Attackers leverage this exclusion intentionally —
-# 79% of targeted attacks in 2023 used LOLBins (Picus Blue Report 2025).
-#
-# Loads from intel/lolbas.json via intel_updater (the full live LOLBAS project feed).
-# Falls back to an empty pattern set if the feed is unavailable — non-fatal.
-# It is purely a static lookup — zero network calls at check time, negligible CPU cost.
 
 import json
 import os
@@ -29,7 +21,6 @@ class LolbinAlert:
     command_line: str
     pid:          int = 0
 
-
 class LolbinDetector:
     """
     Loads LOLBAS abuse patterns once at startup and provides O(1) binary-name
@@ -49,15 +40,11 @@ class LolbinDetector:
                 if not name:
                     continue
 
-                # Collect all Commands for this binary
                 commands = entry.get("Commands") or []
 
-                # Pick the first non-empty MitreID and Category across all commands
                 mitre  = next((c.get("MitreID",  "") for c in commands if c.get("MitreID")),  "")
                 tactic = next((c.get("Category", "") for c in commands if c.get("Category")), "")
 
-                # Extract flag-style arguments (-flag or /flag) from each Command
-                # example: "certutil -urlcache -split -f http://..." -> ["-urlcache", "-split", "-f"]
                 patterns: list[str] = []
                 for cmd in commands:
                     for token in (cmd.get("Command") or "").split():
@@ -82,7 +69,6 @@ class LolbinDetector:
         if not process_name:
             return None
 
-        # Normalise: strip path prefix, ensure .exe suffix
         raw = os.path.basename(process_name).lower().strip()
         if not raw.endswith(".exe"):
             raw += ".exe"
@@ -91,7 +77,6 @@ class LolbinDetector:
         if not entry:
             return None
 
-        # ── WMI CommandLine fallback ──────────────────────────────────────────
         # WMI Win32_Process.CommandLine is often None for short-lived processes
         # because the OS recycles the PEB before WMI reads it.  When that happens
         # we still know the binary name is a known LOLBin, so we emit a
@@ -107,7 +92,6 @@ class LolbinDetector:
                 pid          = pid,
             )
 
-        # Case-insensitive pattern match on the command line
         cmd_lower = command_line.lower()
         matched = [p for p in entry.get("patterns", []) if p.lower() in cmd_lower]
 
@@ -134,7 +118,7 @@ class LolbinDetector:
         print(        f"  Command Line: {alert.command_line[:200]}")
         colors.critical(f"{'='*62}\n")
         self._save_to_db(alert)
-    
+
     def format_alert(self, alert: LolbinAlert) -> str:
         """Returns a plain-text formatted alert string for GUI display."""
         return (

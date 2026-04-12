@@ -1,37 +1,4 @@
 # modules/drift_detector.py
-#
-# Novel Contribution 4 — Statistical Concept Drift Detector
-#
-# Problem solved:
-#   ML models trained on historical malware degrade over time as the threat
-#   landscape evolves — attackers modify their tools to evade classifiers.
-#   This is called concept drift. CyberSentinel's Adaptive Learning Engine
-#   corrects the model when analysts flag errors, but it only reacts when a
-#   human notices a problem. This module proactively detects drift before
-#   analysts notice, by statistically monitoring the model's confidence
-#   score distribution over time.
-#
-# Detection method:
-#   Page-Hinkley Test — an online change detection algorithm designed for
-#   sequential data streams. It accumulates deviations from a reference mean
-#   and raises an alert when the cumulative sum exceeds a threshold.
-#   Chosen over simpler moving-average methods because it has a formal
-#   statistical basis and a known false positive rate.
-#
-#   Reference:
-#   Page, E. S. (1954). Continuous inspection schemes.
-#   Biometrika, 41(1/2), 100-115.
-#
-# What triggers a drift alert:
-#   The model's average confidence score on MALICIOUS verdicts drops
-#   significantly compared to the first N scans (the reference window).
-#   A falling confidence on malicious files means the model is becoming
-#   uncertain about threats it should recognize — a hallmark of concept drift.
-#
-# Integration:
-#   Called by analysis_manager.scan_file() after every ML verdict.
-#   Drift alerts are stored in the database and surfaced on the
-#   Adaptive Learning GUI page with a recommendation to retrain.
 
 import os
 import json
@@ -42,9 +9,7 @@ import statistics
 from . import utils
 from . import colors
 
-# ─────────────────────────────────────────────────────────────────────────────
-#  PAGE-HINKLEY PARAMETERS
-# ─────────────────────────────────────────────────────────────────────────────
+# ── PAGE-HINKLEY PARAMETERS
 
 # Minimum scans before drift detection activates
 MIN_REFERENCE_WINDOW = 30
@@ -63,9 +28,7 @@ PH_DELTA = 0.005
 # Page-Hinkley detection threshold
 PH_LAMBDA = 50.0
 
-# ─────────────────────────────────────────────────────────────────────────────
-#  DATABASE SCHEMA
-# ─────────────────────────────────────────────────────────────────────────────
+# ── DATABASE SCHEMA
 
 _CREATE_DRIFT_TABLE = """
 CREATE TABLE IF NOT EXISTS drift_alerts (
@@ -92,7 +55,6 @@ CREATE TABLE IF NOT EXISTS ml_score_log (
 )
 """
 
-
 def _ensure_tables():
     """Creates drift detection tables if they do not exist."""
     try:
@@ -102,10 +64,7 @@ def _ensure_tables():
     except sqlite3.Error as e:
         print(f"[-] DriftDetector: Table creation failed: {e}")
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-#  CORE CLASS
-# ─────────────────────────────────────────────────────────────────────────────
+# ── CORE CLASS
 
 class DriftDetector:
     """
@@ -408,13 +367,9 @@ class DriftDetector:
         except sqlite3.Error as e:
             print(f"[-] DriftDetector: Alert persist failed: {e}")
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-#  MODULE-LEVEL SINGLETON
-# ─────────────────────────────────────────────────────────────────────────────
+# ── MODULE-LEVEL SINGLETON
 
 _instance: DriftDetector | None = None
-
 
 def get_drift_detector() -> DriftDetector:
     """Returns the module-level DriftDetector singleton."""

@@ -1,18 +1,4 @@
 # modules/utils.py
-#
-# Shared utility library used by all CyberSentinel modules.
-#
-# Sections:
-#   1. Hardware-bound Fernet encryption  (AES-128-CBC + HMAC-SHA256, PBKDF2 key)
-#   2. Configuration persistence         (encrypted API keys, webhook URL)
-#   3. SOC webhook dispatcher            (Discord, Slack, Teams compatible)
-#   4. Network and file utilities        (connectivity check, SHA-256 hashing)
-#   5. SQLite database management        (schema init, cache read/write)
-#
-# Security model:
-#   API keys are encrypted with a key derived from the machine's hardware MAC address
-#   via PBKDF2-HMAC-SHA256 (100,000 iterations). The encrypted config.json file
-#   cannot be decrypted on any other machine.
 
 import hashlib
 import socket
@@ -32,10 +18,7 @@ from ._paths import INSTALL_DIR as _INSTALL_DIR
 CONFIG_FILE = str(_INSTALL_DIR / "config.json")
 DB_FILE     = str(_INSTALL_DIR / "threat_cache.db")
 
-
-# ─────────────────────────────────────────────
-#  SECTION 1: HARDWARE-BOUND FERNET ENCRYPTION
-# ─────────────────────────────────────────────
+# ── SECTION 1: HARDWARE-BOUND FERNET ENCRYPTION
 
 def _get_fernet():
     """
@@ -64,11 +47,9 @@ def _get_fernet():
     except ImportError:
         return None
 
-
 def _legacy_get_machine_key() -> bytes:
     """Retained ONLY for migrating old XOR-encrypted configs. Do not use for new data."""
     return hashlib.sha256(str(uuid.getnode()).encode()).digest()
-
 
 def _legacy_decrypt(encrypted_key: str) -> str:
     """Decrypts a config saved by the old XOR+Base64 scheme for one-time migration."""
@@ -85,7 +66,6 @@ def _legacy_decrypt(encrypted_key: str) -> str:
     except Exception:
         return ""
 
-
 def encrypt_key(api_key: str) -> str:
     """
     Encrypts an API key with Fernet (AES-128-CBC + HMAC).
@@ -100,7 +80,7 @@ def encrypt_key(api_key: str) -> str:
         try:
             return "v2:" + f.encrypt(api_key.encode()).decode()
         except Exception:
-            pass  # Non-critical: operation continues regardless
+            pass
 
     # Fallback: legacy XOR (warn user to install cryptography)
     print("[!] Warning: 'cryptography' package missing. Using weak XOR fallback. Run: pip install cryptography")
@@ -111,7 +91,6 @@ def encrypt_key(api_key: str) -> str:
         for a, b in zip(api_bytes, dynamic_key * (len(api_bytes) // len(dynamic_key) + 1))
     )
     return base64.b64encode(xored).decode("utf-8")
-
 
 def decrypt_key(encrypted_key: str) -> str:
     """
@@ -136,10 +115,7 @@ def decrypt_key(encrypted_key: str) -> str:
     # Legacy XOR path — migrate silently
     return _legacy_decrypt(encrypted_key)
 
-
-# ─────────────────────────────────────────────
-#  SECTION 2: CONFIG PERSISTENCE
-# ─────────────────────────────────────────────
+# ── SECTION 2: CONFIG PERSISTENCE
 
 def load_config() -> dict:
     """Reads and decrypts all API keys, webhook URL, LLM model, and priority paths from disk."""
@@ -175,10 +151,9 @@ def load_config() -> dict:
         hp = data.get("high_priority_paths", [])
         config_data["high_priority_paths"]  = hp if isinstance(hp, list) else []
     except Exception:
-        pass  # Non-critical: operation continues regardless
+        pass
 
     return config_data
-
 
 def save_config(
     api_keys:            dict,
@@ -212,7 +187,6 @@ def save_config(
         print(f"[-] Failed to save configuration: {e}")
         return False
 
-
 def ollama_list_models() -> list[str]:
     """
     Returns a sorted list of locally available Ollama model names by
@@ -239,10 +213,7 @@ def ollama_list_models() -> list[str]:
     except Exception:
         return []
 
-
-# ─────────────────────────────────────────────
-#  SECTION 3: SOC WEBHOOK
-# ─────────────────────────────────────────────
+# ── SECTION 3: SOC WEBHOOK
 
 def send_webhook_alert(webhook_url: str, title: str, details: dict) -> bool:
     """
@@ -340,9 +311,7 @@ def route_webhook_alert(
 
     return send_webhook_alert(url, title, details)
 
-# ─────────────────────────────────────────────
-#  SECTION 4: NETWORK & FILE UTILITIES
-# ─────────────────────────────────────────────
+# ── SECTION 4: NETWORK & FILE UTILITIES
 
 def check_internet(host: str = "8.8.8.8", port: int = 53, timeout: int = 3) -> bool:
     """Pings Google DNS to verify external network routing."""
@@ -353,7 +322,6 @@ def check_internet(host: str = "8.8.8.8", port: int = 53, timeout: int = 3) -> b
         return True
     except socket.error:
         return False
-
 
 def get_sha256(file_path: str) -> Optional[str]:
     """
@@ -369,17 +337,13 @@ def get_sha256(file_path: str) -> Optional[str]:
     except (FileNotFoundError, PermissionError, OSError):
         return None
 
-
 def sanitize_path(path: str) -> str:
     """Strips hidden characters and quotes from terminal drag-and-drop operations."""
     if not path:
         return ""
     return path.strip().lstrip("& ").strip("'\"").strip()
 
-
-# ─────────────────────────────────────────────
-#  SECTION 5: SQLITE DATABASE MANAGEMENT
-# ─────────────────────────────────────────────
+# ── SECTION 5: SQLITE DATABASE MANAGEMENT
 
 def init_db():
     """
@@ -492,7 +456,6 @@ def init_db():
                     added_at      TEXT    NOT NULL
                 )
             """)
-            # Novel Feature 2: SHAP explainability results
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS shap_explanations (
                     id              INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -505,7 +468,6 @@ def init_db():
                     timestamp       TEXT    NOT NULL
                 )
             """)
-            # Novel Feature 3: Dynamic Risk Score history
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS risk_scores (
                     id              INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -519,7 +481,6 @@ def init_db():
                     timestamp       TEXT    NOT NULL
                 )
             """)
-            # Novel Feature 4: Concept drift alerts and ML score log
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS drift_alerts (
                     id                INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -576,7 +537,6 @@ def init_db():
     except sqlite3.Error as e:
         print(f"[-] Threat Cache Initialization Failed: {e}")
 
-
 def save_cached_result(
     sha256:        str,
     verdict:       str,
@@ -612,7 +572,6 @@ def save_cached_result(
     except sqlite3.Error:
         pass
 
-
 def get_cached_result(sha256: str) -> Optional[dict]:
     """
     Retrieves a cached scan verdict with full forensic context including
@@ -639,7 +598,6 @@ def get_cached_result(sha256: str) -> Optional[dict]:
         print(f"[-] Cache Read Error: {e}")
     return None
 
-
 def get_all_cached_results() -> list:
     """Returns all cached scan records for the dashboard and cache viewer."""
     try:
@@ -650,7 +608,6 @@ def get_all_cached_results() -> list:
             return [{"sha256": r[0], "filename": r[1], "verdict": r[2], "timestamp": r[3]} for r in rows]
     except sqlite3.Error:
         return []
-
 
 def is_excluded(file_path: str) -> bool:
     """
@@ -666,7 +623,7 @@ def is_excluded(file_path: str) -> bool:
                 f.write("# Add directory or file paths below to bypass scanning.\n")
                 f.write("# Example: C:\\Program Files\\MySafeCompany\\\n")
         except Exception:
-            pass  # Non-critical: operation continues regardless
+            pass
         return False
 
     try:
@@ -681,13 +638,7 @@ def is_excluded(file_path: str) -> bool:
     except Exception:
         return False
 
-
-
-
-
-# ─────────────────────────────────────────────
-#  SECTION 7: SIEM EXPORT
-# ─────────────────────────────────────────────
+# ── SECTION 7: SIEM EXPORT
 
 def export_scan_history(fmt: str, filepath: str) -> tuple[bool, str]:
     """

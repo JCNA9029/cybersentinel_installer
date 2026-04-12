@@ -1,31 +1,4 @@
 # modules/risk_scorer.py
-#
-# Novel Contribution 3 — Dynamic Context-Aware Risk Scoring Engine
-#
-# Problem solved:
-#   Every existing EDR tool assigns a static severity score based solely on
-#   the file being scanned. This ignores the host context — whether the machine
-#   is currently under attack, what time it is, what other threats are active.
-#   The result is alert fatigue: every detection looks equally urgent regardless
-#   of circumstances.
-#
-# What this module does:
-#   Computes a composite Dynamic Risk Score (DRS) from 0.0 to 1.0 by combining:
-#     1. ML/Cloud verdict weight   — the base probability of maliciousness
-#     2. Temporal anomaly weight   — scans at unusual hours score higher
-#     3. Active threat context     — concurrent detections amplify individual scores
-#     4. Attack chain presence     — if a chain is active, everything scores higher
-#     5. Network activity          — active outbound connections increase risk
-#     6. Baseline deviation        — unknown processes in baseline score higher
-#
-#   The DRS replaces the raw ML score for display and prioritization purposes.
-#   It does NOT change the binary verdict — SAFE stays SAFE even with a high DRS.
-#   It answers: "How urgent is this alert right now, on this machine, at this moment?"
-#
-# Academic grounding:
-#   Prioritization-based alert triage is documented in:
-#   Axelsson, S. (2000). The base-rate fallacy and the difficulty of intrusion
-#   detection. ACM Transactions on Information and System Security, 3(3), 186-205.
 
 import os
 import sqlite3
@@ -90,10 +63,7 @@ def _temporal_risk_score(dt: datetime.datetime) -> float:
     # Late night (22:00–00:00)
     return 0.9
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-#  DATABASE SCHEMA
-# ─────────────────────────────────────────────────────────────────────────────
+# ── DATABASE SCHEMA
 
 _CREATE_RISK_TABLE = """
 CREATE TABLE IF NOT EXISTS risk_scores (
@@ -109,7 +79,6 @@ CREATE TABLE IF NOT EXISTS risk_scores (
 )
 """
 
-
 def _ensure_table():
     """Creates the risk_scores table if it does not exist."""
     try:
@@ -118,10 +87,7 @@ def _ensure_table():
     except sqlite3.Error as e:
         print(f"[-] RiskScorer: Table creation failed: {e}")
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-#  CORE CLASS
-# ─────────────────────────────────────────────────────────────────────────────
+# ── CORE CLASS
 
 class DynamicRiskScorer:
     """
@@ -459,13 +425,9 @@ class DynamicRiskScorer:
         except Exception:
             return []
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-#  MODULE-LEVEL SINGLETON
-# ─────────────────────────────────────────────────────────────────────────────
+# ── MODULE-LEVEL SINGLETON
 
 _instance: DynamicRiskScorer | None = None
-
 
 def get_risk_scorer() -> DynamicRiskScorer:
     """Returns the module-level DynamicRiskScorer singleton."""

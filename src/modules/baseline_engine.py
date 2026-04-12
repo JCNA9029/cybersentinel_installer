@@ -1,12 +1,4 @@
 # modules/baseline_engine.py — Per-Machine Environment Baselining
-#
-# Runs a "learn mode" that profiles normal host behavior over a configurable
-# window (default 24 h), then uses deviations from that profile to boost
-# ML confidence — dramatically cutting false positives on known-good software.
-#
-# Addresses the market gap: commercial EDRs use fleet-wide baselines.
-# CyberSentinel's baseline is per-machine, making it far more accurate for
-# specialized or air-gapped systems where fleet data doesn't exist.
 
 import os
 import json
@@ -20,7 +12,6 @@ from . import colors
 
 LEARN_MODE_FILE  = "baseline_learning.flag"   # Presence = learn mode active
 BASELINE_HOURS   = int(os.environ.get("CS_BASELINE_HOURS", "24"))
-
 
 class BaselineEngine:
     """
@@ -38,9 +29,7 @@ class BaselineEngine:
         self._profiles: dict = {}          # sha256 → {name, seen_count, paths, nets}
         self._load_profiles()
 
-    # ─────────────────────────────────────────────
-    #  PUBLIC API
-    # ─────────────────────────────────────────────
+    # ── PUBLIC API
 
     def start_learning(self, hours: int = BASELINE_HOURS):
         """Begins learn mode. Writes flag file so restarts continue the window."""
@@ -88,7 +77,6 @@ class BaselineEngine:
         """Returns True if baseline learning mode is currently active."""
         if not self._learning:
             return False
-        # Auto-expire if the learn window has passed
         if os.path.exists(LEARN_MODE_FILE):
             try:
                 with open(LEARN_MODE_FILE) as f:
@@ -98,7 +86,7 @@ class BaselineEngine:
                     self.stop_learning()
                     return False
             except Exception:
-                pass  # Non-critical: operation continues regardless
+                pass
         return self._learning
 
     def display_baseline_stats(self):
@@ -119,9 +107,7 @@ class BaselineEngine:
         for name, count in top:
             print(f"  {(name or 'Unknown'):<35}  {count}")
 
-    # ─────────────────────────────────────────────
-    #  BACKGROUND THREAD
-    # ─────────────────────────────────────────────
+    # ── BACKGROUND THREAD
 
     def _start_thread(self):
         self._stop_evt.clear()
@@ -149,22 +135,19 @@ class BaselineEngine:
                     except (psutil.AccessDenied, psutil.NoSuchProcess):
                         continue
             except Exception:
-                pass  # Non-critical: operation continues regardless
+                pass
 
             flush_counter += 1
             if flush_counter >= 20:      # Flush to DB every ~10 min
                 self._flush_profiles()
                 flush_counter = 0
 
-            # Auto-stop learning when window expires
             if self._learning and not self.is_learning():
                 break
 
             self._stop_evt.wait(30)
 
-    # ─────────────────────────────────────────────
-    #  PROFILE RECORDING
-    # ─────────────────────────────────────────────
+    # ── PROFILE RECORDING
 
     def _record(self, sha256: str, name: str, path: str, pid: int):
         if sha256 not in self._profiles:
@@ -176,13 +159,12 @@ class BaselineEngine:
         entry["seen_count"] += 1
         entry["paths"].add(path)
 
-        # Record outbound network destinations for this process
         try:
             for conn in psutil.Process(pid).net_connections(kind="inet"):
                 if conn.status == "ESTABLISHED" and conn.raddr:
                     entry["net_dests"].add(conn.raddr.ip)
         except Exception:
-            pass  # Non-critical: operation continues regardless
+            pass
 
     def _flush_profiles(self):
         """Writes in-memory profiles to SQLite."""
@@ -208,22 +190,18 @@ class BaselineEngine:
                         )
             self._profiles.clear()
         except Exception:
-            pass  # Non-critical: operation continues regardless
+            pass
 
-    # ─────────────────────────────────────────────
-    #  DEVIATION DETECTION
-    # ─────────────────────────────────────────────
+    # ── DEVIATION DETECTION
 
     def _check_deviation(self, sha256: str, name: str, path: str):
         if sha256 in self._profiles:
             return    # Already known in memory
 
-        # Respect the shared exclusion list — processes excluded from scanning
         # are also excluded from baseline deviation alerts.
         if utils.is_excluded(path) or utils.is_excluded(name):
             return
 
-        # Check DB
         if not self._in_db(sha256):
             colors.warning(
                 f"[BASELINE] ⚠  Unknown binary not in baseline profile:\n"
@@ -252,4 +230,4 @@ class BaselineEngine:
                 self._profiles[r[0]] = {"name": r[1], "seen_count": r[2],
                                         "paths": set(), "net_dests": set()}
         except Exception:
-            pass  # Non-critical: operation continues regardless
+            pass

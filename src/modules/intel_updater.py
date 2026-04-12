@@ -1,13 +1,4 @@
 # modules/intel_updater.py — Threat Intelligence Feed Manager
-#
-# Downloads and caches four open-source threat intelligence datasets:
-#   1. LOLBAS Project  — Living-off-the-Land binary abuse patterns
-#   2. LOLDrivers      — Known-vulnerable signed Windows drivers
-#   3. Abuse.ch JA3    — Malicious TLS client fingerprints
-#   4. Feodo Tracker   — Active C2 botnet IP blocklist
-#
-# All feeds are cached as local JSON/CSV files under ./intel/
-# so the app operates fully offline after first update.
 
 import os
 import json
@@ -39,15 +30,12 @@ MIN_FEED_SIZES = {
     "feodo":       5_000,
 }
 
-# Feed content types — used to validate the response is parseable
 # before overwriting the cached copy.
 _JSON_FEEDS = {"lolbas", "loldrivers", "feodo"}
 _CSV_FEEDS  = {"ja3"}
 
-
 def _ensure_intel_dir():
     os.makedirs(INTEL_DIR, exist_ok=True)
-
 
 def _load_meta() -> dict:
     if os.path.exists(META_PATH):
@@ -55,17 +43,15 @@ def _load_meta() -> dict:
             with open(META_PATH) as f:
                 return json.load(f)
         except Exception:
-            pass  # Non-critical: operation continues regardless
+            pass
     return {}
-
 
 def _save_meta(meta: dict):
     try:
         with open(META_PATH, "w") as f:
             json.dump(meta, f, indent=2)
     except Exception:
-        pass  # Non-critical: operation continues regardless
-
+        pass
 
 def _needs_update(meta: dict, feed_name: str, max_age_hours: int = 24) -> bool:
     last = meta.get(feed_name)
@@ -76,7 +62,6 @@ def _needs_update(meta: dict, feed_name: str, max_age_hours: int = 24) -> bool:
         return delta.total_seconds() > max_age_hours * 3600
     except Exception:
         return True
-
 
 def update_feed(feed_name: str, force: bool = False) -> bool:
     """Downloads a single feed. Returns True on success."""
@@ -104,7 +89,6 @@ def update_feed(feed_name: str, force: bool = False) -> bool:
         resp = requests.get(url, timeout=TIMEOUT, verify=True)
         resp.raise_for_status()
 
-        # V3 Fix: Integrity check 1 — minimum size guard
         # A response smaller than the minimum indicates an error page,
         # a compromised feed, or a DNS hijack returning a stub response.
         min_size = MIN_FEED_SIZES.get(feed_name, 1000)
@@ -115,7 +99,6 @@ def update_feed(feed_name: str, force: bool = False) -> bool:
             )
             return False
 
-        # V3 Fix: Integrity check 2 — content parseability validation
         # Validate the response is actually the expected format before
         # overwriting the cached copy. A corrupted or spoofed response
         # that cannot be parsed is rejected and the old cache is kept.
@@ -126,7 +109,6 @@ def update_feed(feed_name: str, force: bool = False) -> bool:
                 print(f"[-] {feed_name}: Invalid JSON in response ({e}) — rejecting update.")
                 return False
         elif feed_name in _CSV_FEEDS:
-            # CSV: verify at least one non-comment line with expected format
             lines = resp.text.splitlines()
             data_lines = [l for l in lines if l.strip() and not l.startswith("#")]
             if not data_lines:
@@ -144,7 +126,6 @@ def update_feed(feed_name: str, force: bool = False) -> bool:
         print(f"[-] Failed to update {feed_name}: {e}")
         return False
 
-
 def update_all(force: bool = False):
     """Updates all four intelligence feeds."""
     print("\n[*] Updating CyberSentinel Threat Intelligence Feeds...")
@@ -154,7 +135,6 @@ def update_all(force: bool = False):
     ok = sum(results.values())
     print(f"[+] Intel update complete: {ok}/{len(FEEDS)} feeds refreshed.\n")
     return results
-
 
 def feed_status() -> dict:
     """Returns the last-updated timestamp for each feed."""
@@ -171,7 +151,6 @@ def feed_status() -> dict:
         }
     return status
 
-
 # ─── Convenience loaders used by detector modules ─────────────────────────────
 
 def load_lolbas() -> list:
@@ -186,7 +165,6 @@ def load_lolbas() -> list:
     except Exception:
         return []
 
-
 def load_loldrivers() -> list:
     """Returns LOLDrivers entries as a list of dicts. Auto-updates if missing."""
     if not os.path.exists(LOLDRIVERS_PATH):
@@ -198,7 +176,6 @@ def load_loldrivers() -> list:
             return json.load(f)
     except Exception:
         return []
-
 
 def load_ja3_blocklist() -> set:
     """Returns a set of malicious JA3 fingerprint hex strings."""
@@ -217,9 +194,8 @@ def load_ja3_blocklist() -> set:
                 if parts:
                     hashes.add(parts[0].strip())
     except Exception:
-        pass  # Non-critical: operation continues regardless
+        pass
     return hashes
-
 
 def load_feodo_blocklist() -> set:
     """Returns a set of active C2 IP address strings."""
@@ -230,7 +206,6 @@ def load_feodo_blocklist() -> set:
     try:
         with open(FEODO_PATH) as f:
             data = json.load(f)
-        # Feodo format: list of {"ip_address": "...", "malware": "...", ...}
         return {entry.get("ip_address", "") for entry in data if entry.get("ip_address")}
     except Exception:
         return set()

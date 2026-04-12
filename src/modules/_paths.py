@@ -1,20 +1,7 @@
 # modules/_paths.py
-#
-# Central path resolver for CyberSentinel.
-#
-# Priority order for finding the install directory:
-#   1. Windows registry  — HKLM\SOFTWARE\CyberSentinel\InstallDir
-#      (written by the Inno Setup installer — always correct regardless of
-#       where the user launches the app from)
-#   2. __file__-relative fallback
-#      (works when running directly from source / dev environment)
-#
-# Every module that needs models/, config.json, or threat_cache.db should
-# import from here instead of computing os.path.abspath(__file__) themselves.
 
 import os
 from pathlib import Path
-
 
 def _resolve_install_dir() -> Path:
     """Return the CyberSentinel root directory."""
@@ -38,7 +25,6 @@ def _resolve_install_dir() -> Path:
 
     # 2. __file__-relative fallback (modules/ -> src/)
     return Path(__file__).resolve().parent.parent
-
 
 # Public constants — import these instead of recomputing paths
 INSTALL_DIR  = _resolve_install_dir()

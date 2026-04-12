@@ -1,22 +1,4 @@
 # gui.py
-#
-# CyberSentinel v1 — PyQt6 Desktop GUI
-#
-# Provides a full graphical interface for all EDR features, replacing the CLI
-# for end-user interaction. All scan operations run in QThread workers so the
-# interface remains responsive during long-running cloud API calls or ML inference.
-#
-# Architecture:
-#   - Left sidebar navigation with 15 pages
-#   - ConsoleWidget: strips ANSI codes, applies color-coded output formatting
-#   - GUI callback system: replaces CLI input() prompts with Qt dialogs
-#     (quarantine authorization, network isolation, AI report, engine selection)
-#   - _run_on_main_signal: thread-safe bridge for dialog creation from worker threads
-#
-# Pages:
-#   Dashboard, Scan File, Scan Hash/IoC, Live EDR, LoLBin Abuse, BYOVD Drivers,
-#   Attack Chains, Baseline, Fileless/AMSI, Network, Intel Feeds, Settings,
-#   Evaluation, Analyst Feedback, Adaptive Learning
 
 """
 gui.py — CyberSentinel v1 Desktop GUI
@@ -70,7 +52,6 @@ from PyQt6.QtGui import (
     QFont, QColor, QPalette, QTextCharFormat, QSyntaxHighlighter,
     QIcon, QPixmap, QPainter, QBrush, QLinearGradient,
 )
-
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  THEME
@@ -256,7 +237,6 @@ QLabel#subheader {{
 }}
 """
 
-
 # ══════════════════════════════════════════════════════════════════════════════
 #  OUTPUT CONSOLE WIDGET  (renders colored EDR output)
 # ══════════════════════════════════════════════════════════════════════════════
@@ -310,7 +290,6 @@ class ConsoleWidget(QTextEdit):
         self.clear()
         self.append_line("─" * 60, THEME["border"])
 
-
 # ══════════════════════════════════════════════════════════════════════════════
 #  STAT CARD WIDGET
 # ══════════════════════════════════════════════════════════════════════════════
@@ -352,7 +331,6 @@ class StatCard(QFrame):
     def set_value(self, val):
         self.value_lbl.setText(str(val))
 
-
 # ══════════════════════════════════════════════════════════════════════════════
 #  WORKER THREADS  (run backend ops without freezing the GUI)
 # ══════════════════════════════════════════════════════════════════════════════
@@ -371,7 +349,6 @@ class OutputCapture:
 
     def flush(self):
         self._orig_stdout.flush()
-
 
 class ScanWorker(QThread):
     line_out  = pyqtSignal(str)
@@ -406,7 +383,6 @@ class ScanWorker(QThread):
         finally:
             sys.stdout = cap._orig_stdout
 
-
 class HashWorker(QThread):
     line_out = pyqtSignal(str)
     finished = pyqtSignal(bool)
@@ -433,7 +409,6 @@ class HashWorker(QThread):
         finally:
             sys.stdout = cap._orig_stdout
 
-
 class GenericWorker(QThread):
     line_out = pyqtSignal(str)
     finished = pyqtSignal(object)
@@ -455,7 +430,6 @@ class GenericWorker(QThread):
             self.finished.emit(None)
         finally:
             sys.stdout = cap._orig_stdout
-
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  SETTINGS DIALOG
@@ -527,7 +501,6 @@ class SettingsDialog(QDialog):
         )
         self.accept()
 
-
 # ══════════════════════════════════════════════════════════════════════════════
 #  DATABASE HELPERS  (for live tables)
 # ══════════════════════════════════════════════════════════════════════════════
@@ -550,7 +523,6 @@ def _db_query(sql, params=()):
 def _db_count(sql, params=()):
     rows = _db_query(sql, params)
     return rows[0]["c"] if rows else 0
-
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  HELPERS
@@ -602,7 +574,6 @@ def table_item(text: str, color: str = None) -> QTableWidgetItem:
     # Full text always visible on hover — never loses data to truncation
     item.setToolTip(s)
     return item
-
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  MAIN WINDOW
@@ -1585,7 +1556,6 @@ class CyberSentinelGUI(QMainWindow):
         done   = threading.Event()
 
         def _show():
-            # R3 Fix: done.set() in finally block guarantees the worker thread
             # is always released, even if the dialog raises an exception.
             try:
                 from PyQt6.QtWidgets import QMessageBox
@@ -2194,7 +2164,7 @@ class CyberSentinelGUI(QMainWindow):
         self._byovd_rt_status.setVisible(True)
         self._status_bar.setText("🟢  BYOVD real-time monitor active")
         self._status_bar.setStyleSheet(f"color: {THEME['green']}; padding: 4px 12px; font-size: 11px;")
-    
+
     def _stop_byovd_realtime(self):
         self.byovd.stop_realtime_monitor()
         self._byovd_stop_btn.setVisible(False)
@@ -3965,10 +3935,10 @@ class CyberSentinelGUI(QMainWindow):
 
         # Set the inner widget inside the scroll area
         scroll_area.setWidget(inner)
-        
+
         # Add scroll area to the main page layout instead of the inner widget directly
         layout.addWidget(scroll_area, 1)
-        
+
         return page
 
     def _save_settings(self):
@@ -3993,7 +3963,7 @@ class CyberSentinelGUI(QMainWindow):
             webhook_critical=self.logic.webhook_critical,
             webhook_high=self.logic.webhook_high,
             webhook_chains=self.logic.webhook_chains,
-        )  
+        )
         # Push the new webhook URL into the already-running detector instances
         # so alerts fire immediately without needing a daemon restart.
         url = self.logic.webhook_url
@@ -4035,7 +4005,6 @@ class CyberSentinelGUI(QMainWindow):
             QMessageBox.information(self, "Success", "✅ Webhook test sent successfully!")
         else:
             QMessageBox.warning(self, "Failed", "❌ Webhook test failed — check the URL and your internet connection.")
-
 
     # ── PAGE: EVALUATION ─────────────────────────────────────────────────────
 
@@ -4295,7 +4264,6 @@ class CyberSentinelGUI(QMainWindow):
             f"[+] Evaluation complete. Reports saved to eval_report.json / .txt", THEME["green"]
         )
 
-
     # ── STATUS BAR ────────────────────────────────────────────────────────────
 
     def _set_status(self, text: str, color: str = None):
@@ -4307,7 +4275,6 @@ class CyberSentinelGUI(QMainWindow):
             border-top: 1px solid {THEME['border']};
             background: transparent;
         """)
-
 
     # ── PAGE: ANALYST FEEDBACK ────────────────────────────────────────────────
 
@@ -4589,7 +4556,6 @@ class CyberSentinelGUI(QMainWindow):
                 f"Exported {len(records)} records to:\n{path}")
         except Exception as e:
             QMessageBox.critical(self, "Export Failed", str(e))
-
 
     # ── PAGE: ADAPTIVE LEARNING ───────────────────────────────────────────────
 
@@ -5120,8 +5086,6 @@ class CyberSentinelGUI(QMainWindow):
             except Exception as e:
                 self._al_console.append_line(f"[-] Clear failed: {e}", THEME["red"])
 
-
-
     # ── PAGE: EXPLAINABILITY ──────────────────────────────────────────────────
 
     def _build_explainability_page(self):
@@ -5478,7 +5442,7 @@ class CyberSentinelGUI(QMainWindow):
 
         # Add scroll area to the main page layout instead of the inner widget directly
         layout.addWidget(scroll_area, 1)
-        
+
         QTimer.singleShot(300, self._refresh_drift)
         return page
 
@@ -5556,7 +5520,6 @@ class CyberSentinelGUI(QMainWindow):
         except Exception as e:
             pass
 
-
 # ══════════════════════════════════════════════════════════════════════════════
 #  ENTRY POINT
 # ══════════════════════════════════════════════════════════════════════════════
@@ -5596,7 +5559,6 @@ def main():
     window.show()
     window._show_page("dashboard")
     sys.exit(app.exec())
-
 
 if __name__ == "__main__":
     main()

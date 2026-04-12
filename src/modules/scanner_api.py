@@ -1,26 +1,11 @@
 # modules/scanner_api.py
-#
-# Tier 1 Cloud Intelligence API wrappers.
-#
-# Each class encapsulates authentication, request construction, response parsing,
-# and error handling for one cloud threat intelligence service. All four classes
-# expose a standardized get_report(hash) interface that returns a consistent
-# verdict dictionary for the consensus engine in analysis_manager.py.
-#
-# Standardized return format:
-#   {"verdict": "MALICIOUS" | "SAFE", "engines_detected": int}
-#   None — when the hash has no record or the API is unreachable.
-#
-# All requests are capped at a 5-second timeout to prevent blocking the pipeline.
 
 import requests
 from requests.exceptions import Timeout, RequestException
 import threading
 import time
 
-
 # ─────────────────────────────────────────────────────────────────────────────
-#  D2 Fix: Token Bucket Rate Limiter
 #
 #  VirusTotal free tier: 4 requests/minute, 500/day.
 #  Without throttling, scanning a folder of 100 files would fire 400 concurrent
@@ -56,24 +41,15 @@ class _TokenBucket:
             else:
                 self._tokens -= 1.0
 
-
-# One limiter per service — conservative rates for free tiers
 _vt_limiter    = _TokenBucket(calls_per_minute=4)    # VirusTotal free: 4/min
 _otx_limiter   = _TokenBucket(calls_per_minute=10)   # AlienVault OTX: generous
 _md_limiter    = _TokenBucket(calls_per_minute=10)   # MetaDefender free: ~10/min
 _mb_limiter    = _TokenBucket(calls_per_minute=20)   # MalwareBazaar: generous
 
-
-
 class VirusTotalAPI:
     """
-    Wrapper for the VirusTotal v3 Files API.
-
-    Consensus threshold: 3 or more detection engines must flag the hash
-    before the verdict is elevated to MALICIOUS. This reduces false positives
-    from single-engine noise in the aggregated results.
-
-    Also supports IP address and URL reputation lookups via the v3 API.
+    VirusTotal v3 Files API — consensus threshold: ≥3 engines for MALICIOUS.
+    Also supports IP and URL reputation lookups.
     """
 
     BASE_URL = "https://www.virustotal.com/api/v3/files/"
@@ -83,12 +59,7 @@ class VirusTotalAPI:
         self.headers = {"accept": "application/json", "x-apikey": api_key}
 
     def get_report(self, file_hash: str) -> dict | None:
-        """
-        Queries the VirusTotal v3 API for a file hash verdict.
-
-        Returns a standardized verdict dict, or None if the hash has no record
-        or the request fails.
-        """
+        """Queries the API and returns a standardised verdict dict or None."""
         if not self.api_key:
             return None
         _vt_limiter.acquire()
@@ -106,8 +77,6 @@ class VirusTotalAPI:
                     .get("last_analysis_stats", {})
                 )
                 malicious_count = stats.get("malicious", 0)
-                # Sum all engine categories to compute the quorum denominator.
-                # Keys: malicious, suspicious, harmless, undetected, timeout, failure.
                 engines_total = sum(stats.values())
                 return {
                     "verdict":          "MALICIOUS" if malicious_count >= 3 else "SAFE",
@@ -119,7 +88,7 @@ class VirusTotalAPI:
             return None
 
     def get_ip_report(self, ip: str) -> dict | None:
-        """Queries VirusTotal v3 for an IP address reputation verdict."""
+        """Queries the API for an IP address reputation verdict."""
         if not self.api_key:
             return None
         _vt_limiter.acquire()
@@ -146,13 +115,12 @@ class VirusTotalAPI:
             return None
 
     def get_url_report(self, url_indicator: str) -> dict | None:
-        """Queries VirusTotal v3 for a URL reputation verdict."""
+        """Queries the API for a URL reputation verdict."""
         import base64 as _b64
         if not self.api_key:
             return None
         _vt_limiter.acquire()
         try:
-            # VirusTotal v3 URL lookup requires base64url-encoded URL (no padding)
             url_id = _b64.urlsafe_b64encode(
                 url_indicator.encode()
             ).decode().rstrip("=")
@@ -177,15 +145,10 @@ class VirusTotalAPI:
         except RequestException:
             return None
 
-
 class AlienVaultAPI:
     """
-    Wrapper for the AlienVault OTX Indicators API.
-
-    A hash is considered MALICIOUS if it belongs to one or more threat
-    intelligence "pulses" in the OTX community database.
-
-    Also supports IP address and URL reputation lookups via OTX indicators.
+    AlienVault OTX Indicators API — MALICIOUS if hash appears in ≥1 pulse.
+    Also supports IP and URL reputation lookups.
     """
 
     def __init__(self, api_key: str):
@@ -193,12 +156,7 @@ class AlienVaultAPI:
         self.headers = {"X-OTX-API-KEY": self.api_key}
 
     def get_report(self, file_hash: str) -> dict | None:
-        """
-        Queries the AlienVault OTX API for a file hash verdict.
-
-        Returns a standardized verdict dict, or None if the hash has no record
-        or the request fails.
-        """
+        """Queries the API and returns a standardised verdict dict or None."""
         if not self.api_key:
             return None
         try:
@@ -225,7 +183,7 @@ class AlienVaultAPI:
             return None
 
     def get_ip_report(self, ip: str) -> dict | None:
-        """Queries AlienVault OTX for an IP address reputation verdict."""
+        """Queries the API for an IP address reputation verdict."""
         if not self.api_key:
             return None
         try:
@@ -245,12 +203,11 @@ class AlienVaultAPI:
             return None
 
     def get_url_report(self, url_indicator: str) -> dict | None:
-        """Queries AlienVault OTX for a URL/domain reputation verdict."""
+        """Queries the API for a URL reputation verdict."""
         if not self.api_key:
             return None
         try:
             _otx_limiter.acquire()
-            # OTX uses domain as the indicator type for URL lookups
             from urllib.parse import urlparse as _urlparse
             domain = _urlparse(url_indicator).netloc or url_indicator
             url = f"https://otx.alienvault.com/api/v1/indicators/domain/{domain}/general"
@@ -267,13 +224,9 @@ class AlienVaultAPI:
         except (Timeout, RequestException, ValueError):
             return None
 
-
 class MetaDefenderAPI:
     """
-    Wrapper for the OPSWAT MetaDefender v4 Hash Lookup API.
-
-    Reports the number of threat detections across MetaDefender's
-    multi-engine scan results.
+    OPSWAT MetaDefender v4 Hash Lookup API.
     """
 
     def __init__(self, api_key: str):
@@ -281,12 +234,7 @@ class MetaDefenderAPI:
         self.headers = {"apikey": self.api_key}
 
     def get_report(self, file_hash: str) -> dict | None:
-        """
-        Queries the MetaDefender v4 API for a file hash verdict.
-
-        Returns a standardized verdict dict, or None if the hash has no record
-        or the request fails.
-        """
+        """Queries the API and returns a standardised verdict dict or None."""
         if not self.api_key:
             return None
         try:
@@ -312,17 +260,9 @@ class MetaDefenderAPI:
             print("[-] MetaDefender: Invalid JSON in response.")
             return None
 
-
 class MalwareBazaarAPI:
     """
-    Wrapper for the abuse.ch MalwareBazaar hash lookup API.
-
-    MalwareBazaar is a repository of confirmed malware samples. A hash
-    present in the database is definitively malicious (engines_detected = 1).
-    A hash absent from the database returns SAFE with engines_detected = 0.
-
-    The User-Agent header is set to identify CyberSentinel as the client
-    per the MalwareBazaar API usage guidelines.
+    abuse.ch MalwareBazaar hash lookup — hash present = definitively MALICIOUS.
     """
 
     _API_URL = "https://mb-api.abuse.ch/api/v1/"
@@ -337,13 +277,7 @@ class MalwareBazaarAPI:
         self.api_key = api_key
 
     def get_report(self, file_hash: str) -> dict | None:
-        """
-        Queries the MalwareBazaar API for a file hash verdict.
-
-        Returns {"verdict": "MALICIOUS", "engines_detected": 1} if the hash
-        is in the confirmed malware database, {"verdict": "SAFE", ...} if not
-        found, or None on API failure.
-        """
+        """Queries the API and returns a standardised verdict dict or None."""
         if not self.api_key:
             return None
         try:

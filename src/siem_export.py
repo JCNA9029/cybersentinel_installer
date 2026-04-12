@@ -139,7 +139,6 @@ _TABLES: list[dict] = [
     },
 ]
 
-
 # ── State management ──────────────────────────────────────────────────────────
 
 def _load_state() -> dict:
@@ -151,16 +150,13 @@ def _load_state() -> dict:
             pass
     return {}
 
-
 def _save_state(state: dict):
     _STATE_FILE.write_text(json.dumps(state, indent=2), encoding="utf-8")
-
 
 def _reset_state():
     if _STATE_FILE.exists():
         _STATE_FILE.unlink()
     print("  [*] State reset — next run will export all historical records.")
-
 
 # ── DB helpers ────────────────────────────────────────────────────────────────
 
@@ -189,7 +185,6 @@ def _fetch_new_rows(table_def: dict, since_ts: str, batch_size: int) -> list[dic
         # Table doesn't exist yet (e.g. no BYOVD events ever fired)
         return []
 
-
 # ── Event formatting ──────────────────────────────────────────────────────────
 
 def _parse_json_field(value: str | None) -> dict | str:
@@ -203,7 +198,6 @@ def _parse_json_field(value: str | None) -> dict | str:
             pass
     return value
 
-
 def _to_epoch(ts_str: str) -> float:
     """Convert 'YYYY-MM-DD HH:MM:SS' to Unix epoch for Splunk's 'time' field."""
     try:
@@ -211,7 +205,6 @@ def _to_epoch(ts_str: str) -> float:
         return dt.timestamp()
     except Exception:
         return time.time()
-
 
 def _build_splunk_event(table_def: dict, row: dict) -> dict:
     """
@@ -261,7 +254,6 @@ def _build_splunk_event(table_def: dict, row: dict) -> dict:
         "event":      event,
     }
 
-
 # ── HEC output ────────────────────────────────────────────────────────────────
 
 def _push_hec(events: list[dict], hec_url: str, hec_token: str, hec_index: str) -> bool:
@@ -302,7 +294,6 @@ def _push_hec(events: list[dict], hec_url: str, hec_token: str, hec_index: str) 
         print(f"  [!] HEC push failed — {e}")
         return False
 
-
 # ── File output ───────────────────────────────────────────────────────────────
 
 def _write_jsonl(events: list[dict], output_path: str):
@@ -310,7 +301,6 @@ def _write_jsonl(events: list[dict], output_path: str):
     with open(output_path, "a", encoding="utf-8") as f:
         for ev in events:
             f.write(json.dumps(ev, default=str) + "\n")
-
 
 # ── Core export loop ──────────────────────────────────────────────────────────
 
@@ -359,7 +349,6 @@ def run_export(
     _save_state(state)
     return total_pushed
 
-
 # ── Config loading ────────────────────────────────────────────────────────────
 
 def _load_config() -> dict:
@@ -370,13 +359,11 @@ def _load_config() -> dict:
             print(f"  [!] Could not read siem_config.json — {e}")
     return {}
 
-
 def _write_config_example():
     example_path = _THIS_DIR / "siem_config.json.example"
     if not example_path.exists():
         example_path.write_text(json.dumps(_CONFIG_EXAMPLE, indent=2), encoding="utf-8")
         print(f"  [*] Config example written to {example_path}")
-
 
 # ── Entry point ───────────────────────────────────────────────────────────────
 
@@ -463,7 +450,6 @@ def main():
     else:
         _one_pass()
         print()
-
 
 if __name__ == "__main__":
     main()

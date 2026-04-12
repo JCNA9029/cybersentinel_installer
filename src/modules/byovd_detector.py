@@ -1,22 +1,4 @@
 # modules/byovd_detector.py — Bring Your Own Vulnerable Driver (BYOVD) Detector
-#
-# Merged module combining ByovdDetector and DriverGuard.
-#
-# Solves: Attackers load legitimate, Microsoft-signed drivers that contain known
-# vulnerabilities to gain kernel-level code execution and kill EDR processes.
-# This module monitors driver load events via WMI and cross-references each
-# driver's SHA256 hash against the LOLDrivers community database.
-#
-# Data source: LOLDrivers Project (https://www.loldrivers.io/)
-# Real-world threat: CSA Singapore Advisory AD-2025-018 explicitly flags BYOVD
-# as the primary EDR-killer mechanism used in ransomware pre-deployment.
-#
-# Detection strategy:
-#   1. Live LOLDrivers feed via intel_updater (SHA256 + filename dual lookup)
-#   2. Static local loldrivers.json fallback
-#   3. Real-time WMI background monitor (polls Win32_SystemDriver every 10s)
-#   4. Webhook alerts on detection
-#   5. SQLite persistence for dashboard and audit trail
 
 import os
 import json
@@ -30,7 +12,6 @@ from .intel_updater import load_loldrivers
 _DATA_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "loldrivers.json")
 
 DRIVERS_DIR = r"C:\Windows\System32\drivers"
-
 
 class ByovdDetector:
     """
@@ -52,9 +33,7 @@ class ByovdDetector:
         self._load_live_feed()
         self._load_static_fallback()
 
-    # ─────────────────────────────────────────────
-    #  DATABASE LOADING
-    # ─────────────────────────────────────────────
+    # ── DATABASE LOADING
 
     def _load_live_feed(self):
         """
@@ -72,7 +51,7 @@ class ByovdDetector:
                 cves        = ", ".join(cve_list) if isinstance(cve_list, list) else str(cve_list)
                 cmds = driver.get("Commands") or {}
                 description = cmds.get("Usecase") or cmds.get("Description") or "Known vulnerable driver"
-                filename = (driver.get("Tags") or [""])[0] 
+                filename = (driver.get("Tags") or [""])[0]
                 vendor      = driver.get("Vendor", "Unknown")
                 known_tools = driver.get("KnownMalware", [])
 
@@ -131,9 +110,7 @@ class ByovdDetector:
         except Exception as e:
             print(f"[!] BYOVD: Static fallback load failed — {e}")
 
-    # ─────────────────────────────────────────────
-    #  DETECTION
-    # ─────────────────────────────────────────────
+    # ── DETECTION
 
     def check_driver(self, driver_path: str) -> dict | None:
         """
@@ -260,9 +237,7 @@ class ByovdDetector:
         except Exception:
             pass
 
-    # ─────────────────────────────────────────────
-    #  FORMATTING
-    # ─────────────────────────────────────────────
+    # ── FORMATTING
 
     def format_alert(self, finding: dict) -> str:
         """Formats a BYOVD finding dict into a human-readable alert string."""
@@ -281,9 +256,7 @@ class ByovdDetector:
             f"{'='*60}"
         )
 
-    # ─────────────────────────────────────────────
-    #  SCANNING
-    # ─────────────────────────────────────────────
+    # ── SCANNING
 
     def scan_loaded_drivers(self) -> list[dict]:
         """
@@ -301,9 +274,7 @@ class ByovdDetector:
                     findings.append(result)
         return findings
 
-    # ─────────────────────────────────────────────
-    #  REAL-TIME WMI MONITOR
-    # ─────────────────────────────────────────────
+    # ── REAL-TIME WMI MONITOR
 
     def start_realtime_monitor(self):
         self._stop_monitor = threading.Event()
@@ -355,9 +326,7 @@ class ByovdDetector:
                     pythoncom.CoUninitialize()
             except Exception:
                 pass
-    # ─────────────────────────────────────────────
-    #  UTILITIES
-    # ─────────────────────────────────────────────
+    # ── UTILITIES
 
     def _hash_file(self, path: str) -> str | None:
         """SHA256 hash via chunked read (65536-byte chunks). Returns None on any I/O error."""
@@ -369,7 +338,6 @@ class ByovdDetector:
             return h.hexdigest().lower()
         except Exception:
             return None
-
 
 # Backwards-compatibility alias so any code still importing DriverGuard keeps working
 DriverGuard = ByovdDetector

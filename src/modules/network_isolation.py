@@ -1,6 +1,4 @@
 # This module handles network isolation by modifying Windows Firewall rules.
-# It provides functions to block all inbound and outbound traffic to contain threats such as C2C , as well as a
-# restore function to revert the firewall back to its default state. 
 import subprocess
 import ctypes
 import os
@@ -14,7 +12,7 @@ def is_admin():
 
 def isolate_network():
     """
-    Drops the Windows Firewall guillotine. 
+    Blocks all inbound and outbound traffic (C2 containment).
     Blocks all inbound and outbound traffic to stop data exfiltration and C2 communication.
     """
     if not is_admin():
@@ -24,16 +22,15 @@ def isolate_network():
 
     try:
         print("[*] Engaging Network Containment Protocol...")
-        
-        # PRODUCTION UX FIX: CREATE_NO_WINDOW prevents the cmd.exe window from flashing
+
         creation_flags = 0
         if os.name == 'nt':
             creation_flags = subprocess.CREATE_NO_WINDOW
-            
+
         subprocess.run(
-            ["netsh", "advfirewall", "set", "allprofiles", "firewallpolicy", "blockinbound,blockoutbound"], 
-            check=True, 
-            capture_output=True, 
+            ["netsh", "advfirewall", "set", "allprofiles", "firewallpolicy", "blockinbound,blockoutbound"],
+            check=True,
+            capture_output=True,
             text=True,
             creationflags=creation_flags
         )
@@ -48,7 +45,7 @@ def isolate_network():
 
 def restore_network():
     """
-    The Escape Hatch. Restores the Windows Firewall back to its default state
+    Restores the Windows Firewall back to its default state
     (Block Inbound, Allow Outbound).
     """
     if not is_admin():
@@ -57,15 +54,15 @@ def restore_network():
 
     try:
         print("[*] Disengaging Network Containment Protocol...")
-        
+
         creation_flags = 0
         if os.name == 'nt':
             creation_flags = subprocess.CREATE_NO_WINDOW
-            
+
         subprocess.run(
-            ["netsh", "advfirewall", "set", "allprofiles", "firewallpolicy", "blockinbound,allowoutbound"], 
-            check=True, 
-            capture_output=True, 
+            ["netsh", "advfirewall", "set", "allprofiles", "firewallpolicy", "blockinbound,allowoutbound"],
+            check=True,
+            capture_output=True,
             text=True,
             creationflags=creation_flags
         )

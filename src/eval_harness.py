@@ -1,41 +1,4 @@
 # eval_harness.py — CyberSentinel Quantitative Evaluation Engine
-#
-# Implements the full methodology §3.2.1 / §3.5.2 / §3.6 quantitative pipeline:
-#
-#   ┌─────────────────────────────────────────────────────────────────────┐
-#   │  1. Persistent SQLite score retention  (v2_predictions.db)         │
-#   │  2. Fault-tolerant execution loop      (try/except, error logging)  │
-#   │  3. Temporal stratification            (Pre-2020 / Post-2020)       │
-#   │  4. Stealth/UPX adversarial dataset    (separate subdirectory)      │
-#   │  5. Threshold sweep                    (θ = 0.4 → 0.8, step 0.05)  │
-#   │  6. Confusion matrix per threshold     (TP/FP/TN/FN)               │
-#   │  7. Metrics: Precision, Recall, F1, FPR, FNR, Accuracy             │
-#   │  8. Per-sample raw score log           (for post-hoc analysis)      │
-#   │  9. Tier 1 cloud consensus evaluation  (optional, --tier1 flag)     │
-#   │ 10. JSON + TXT forensic report export                               │
-#   └─────────────────────────────────────────────────────────────────────┘
-#
-# Expected directory structure:
-#
-#   samples/
-#     pre2020/
-#       malware/     ← Pre-2020 malicious PE files
-#       clean/       ← Pre-2020 benign files (Windows system DLLs, etc.)
-#     post2020/
-#       malware/     ← Post-2020 malicious PE files
-#       clean/       ← Post-2020 benign files
-#     stealth/
-#       malware/     ← UPX-packed malicious PE files (adversarial set)
-#       clean/       ← UPX-packed benign files (optional)
-#
-# Flat layout also accepted:
-#   python eval_harness.py --malware ./mal --clean ./clean
-#
-# Usage:
-#   python eval_harness.py --samples ./samples          (full temporal + stealth)
-#   python eval_harness.py --malware ./mal --clean ./ok (flat layout)
-#   python eval_harness.py --samples ./samples --tier1  (also benchmark cloud)
-#   python eval_harness.py --resume                     (resume interrupted run)
 
 import argparse
 import os
@@ -52,18 +15,14 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from modules.ml_engine import LocalScanner
 from modules import utils
 
-# ─────────────────────────────────────────────────────────────────────────────
-#  CONSTANTS
-# ─────────────────────────────────────────────────────────────────────────────
+# ── CONSTANTS
 
 PRED_DB     = os.path.join(os.path.dirname(os.path.abspath(__file__)), "v2_predictions.db")
 THRESHOLDS  = [round(t, 2) for t in [x * 0.05 + 0.40 for x in range(9)]]  # 0.40 … 0.80
 PE_EXTS     = {".exe", ".dll", ".sys", ".scr", ".cpl", ".ocx"}
 DEFAULT_θ   = 0.50   # standard operating threshold
 
-# ─────────────────────────────────────────────────────────────────────────────
-#  PERSISTENT SCORE DATABASE  (v2_predictions.db)
-# ─────────────────────────────────────────────────────────────────────────────
+# ── PERSISTENT SCORE DATABASE  (v2_predictions.db)
 
 def init_pred_db():
     """
@@ -94,7 +53,6 @@ def init_pred_db():
             )
         """)
 
-
 def upsert_prediction(sha256, filename, raw_score, ground_truth, stratum, error_msg, scan_ms):
     """Persist one sample's raw score. Uses INSERT OR REPLACE for idempotency."""
     with sqlite3.connect(PRED_DB) as c:
@@ -105,7 +63,6 @@ def upsert_prediction(sha256, filename, raw_score, ground_truth, stratum, error_
             (sha256, filename, raw_score, ground_truth, stratum,
              error_msg, scan_ms, datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
         )
-
 
 def load_predictions(stratum: Optional[str] = None) -> list:
     """Load all stored predictions, optionally filtered by stratum."""
@@ -123,7 +80,6 @@ def load_predictions(stratum: Optional[str] = None) -> list:
     return [{"sha256": r[0], "filename": r[1], "raw_score": r[2],
              "ground_truth": r[3], "stratum": r[4]} for r in rows]
 
-
 def already_scanned(sha256: str) -> bool:
     """Resume support: check if this file was already processed in a previous run."""
     with sqlite3.connect(PRED_DB) as c:
@@ -132,10 +88,7 @@ def already_scanned(sha256: str) -> bool:
         ).fetchone()
     return row is not None
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-#  SCANNING ENGINE  (fault-tolerant, persistent)
-# ─────────────────────────────────────────────────────────────────────────────
+# ── SCANNING ENGINE  (fault-tolerant, persistent)
 
 def scan_directory(
     scanner: LocalScanner,
@@ -208,10 +161,7 @@ def scan_directory(
 
     return counts
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-#  THRESHOLD SWEEP + METRICS
-# ─────────────────────────────────────────────────────────────────────────────
+# ── THRESHOLD SWEEP + METRICS
 
 def compute_confusion(predictions: list, threshold: float) -> dict:
     """Build confusion matrix for a given decision threshold θ."""
@@ -257,7 +207,6 @@ def compute_confusion(predictions: list, threshold: float) -> dict:
         "fn_files":     fn_files,
     }
 
-
 def sweep_thresholds(predictions: list) -> list:
     """
     Runs compute_confusion across all thresholds in THRESHOLDS list.
@@ -265,15 +214,11 @@ def sweep_thresholds(predictions: list) -> list:
     """
     return [compute_confusion(predictions, θ) for θ in THRESHOLDS]
 
-
 def best_threshold(sweep: list, metric: str = "f1_score") -> dict:
     """Returns the sweep row with the highest value for the given metric."""
     return max(sweep, key=lambda r: r[metric])
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-#  TIER 1 CLOUD EVALUATION
-# ─────────────────────────────────────────────────────────────────────────────
+# ── TIER 1 CLOUD EVALUATION
 
 def evaluate_tier1(directories: list, logic) -> dict:
     """
@@ -337,16 +282,12 @@ def evaluate_tier1(directories: list, logic) -> dict:
         "avg_latency_ms": round(avg_ms, 2),
     }
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-#  REPORT FORMATTING
-# ─────────────────────────────────────────────────────────────────────────────
+# ── REPORT FORMATTING
 
 def _bar(value: float, width: int = 30) -> str:
     """Renders a simple ASCII progress bar for a 0-1 metric."""
     filled = round(value * width)
     return "[" + "█" * filled + "░" * (width - filled) + f"] {value:.2%}"
-
 
 def print_sweep_table(sweep: list, highlight_θ: float = DEFAULT_θ):
     """Prints the full threshold sweep as an aligned table."""
@@ -363,7 +304,6 @@ def print_sweep_table(sweep: list, highlight_θ: float = DEFAULT_θ):
             f"{r['TP']:>5}  {r['FP']:>5}  {r['TN']:>5}  {r['FN']:>5}{marker}"
         )
     print(f"{'─'*80}")
-
 
 def print_metrics_block(title: str, m: dict, fp_files=None, fn_files=None):
     """Prints a formatted metrics block for a single threshold."""
@@ -399,7 +339,6 @@ def print_metrics_block(title: str, m: dict, fp_files=None, fn_files=None):
             print(f"       ✗  {f}")
         if len(fn_files) > 15:
             print(f"       ... and {len(fn_files)-15} more")
-
 
 def save_reports(report: dict, base_path: str = "eval_report"):
     """Saves JSON and human-readable TXT forensic reports."""
@@ -445,10 +384,7 @@ def save_reports(report: dict, base_path: str = "eval_report"):
     except Exception as e:
         print(f"  [-] TXT save failed   : {e}")
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-#  DATASET DISCOVERY
-# ─────────────────────────────────────────────────────────────────────────────
+# ── DATASET DISCOVERY
 
 def discover_strata(samples_root: str) -> dict:
     """
@@ -483,10 +419,7 @@ def discover_strata(samples_root: str) -> dict:
             }
     return strata
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-#  MAIN ORCHESTRATION
-# ─────────────────────────────────────────────────────────────────────────────
+# ── MAIN ORCHESTRATION
 
 def run_evaluation(args) -> dict:
     """
@@ -645,7 +578,6 @@ def run_evaluation(args) -> dict:
 
     return report
 
-
 def _cli_progress(filename: str, score, error: Optional[str]):
     """Minimal per-file progress indicator for CLI mode."""
     if error:
@@ -654,10 +586,7 @@ def _cli_progress(filename: str, score, error: Optional[str]):
         marker = "MALICIOUS" if score >= DEFAULT_θ else "safe     "
         print(f"    [{marker}] {filename[:55]:<55}  score={score:.4f}")
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-#  CLI ENTRY POINT
-# ─────────────────────────────────────────────────────────────────────────────
+# ── CLI ENTRY POINT
 
 def main():
     """Entry point for the ML benchmarking harness — runs batch evaluation on the dataset."""
@@ -734,7 +663,6 @@ Examples:
 
     report = run_evaluation(args)
     save_reports(report, args.output)
-
 
 if __name__ == "__main__":
     main()

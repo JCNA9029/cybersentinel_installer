@@ -1,13 +1,4 @@
 # modules/daemon_monitor.py — Headless Daemon: WMI hook + watchdog + all detectors
-#
-# Thread map:
-#   Thread 1 (main)    — watchdog folder observer
-#   Thread 2 (daemon)  — WMI process/driver hook (LoLBin + BYOVD + baseline)
-#   Thread 3 (daemon)  — ETW / Security Event 4688 process-creation monitor
-#   Thread 4 (daemon)  — Feodo C2 IP monitor
-#   Thread 5 (daemon)  — JA3 TLS sniffer (optional, scapy)
-#   Thread 6 (daemon)  — AMSI ScriptBlock event-log monitor (optional, pywin32)
-#   Thread 7 (daemon)  — Chain correlator sweep every 60 s
 
 import os
 import time
@@ -41,7 +32,6 @@ _SCRIPT_HOSTS = frozenset({
     "mshta.exe",
 })
 
-
 class ThreatHandler(FileSystemEventHandler):
     def __init__(self, logic: ScannerLogic):
         self.logic = logic
@@ -59,10 +49,7 @@ class ThreatHandler(FileSystemEventHandler):
         except Exception as e:
             print(f"[DAEMON] ⚠  Scanner error on {os.path.basename(event.src_path)}: {e}")
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-#  ETW / Security Event 4688 monitor
-# ─────────────────────────────────────────────────────────────────────────────
+# ── ETW / Security Event 4688 monitor
 
 # Bounded seen-record tracker for the ETW loop.
 # The original implementation used a plain set[int] that grew indefinitely.
@@ -70,7 +57,6 @@ class ThreatHandler(FileSystemEventHandler):
 # hundreds of MB over a multi-day daemon run.
 # A deque-backed ring buffer keeps membership O(1) while capping memory.
 _ETW_SEEN_MAX = 50_000
-
 
 class _BoundedSeen:
     """O(1) membership test with a fixed memory ceiling."""
@@ -89,7 +75,6 @@ class _BoundedSeen:
         if len(self._dq) > self._max:
             self._s.discard(self._dq.popleft())
         return False
-
 
 def _monitor_processes_etw(lolbas: LolbasDetector, lolbin, fileless: FilelessMonitor):
     """
@@ -191,10 +176,7 @@ def _monitor_processes_etw(lolbas: LolbasDetector, lolbin, fileless: FilelessMon
 
         time.sleep(POLL_SECS)
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-#  WMI process creation monitor
-# ─────────────────────────────────────────────────────────────────────────────
+# ── WMI process creation monitor
 
 def _monitor_processes(logic, lolbas, byovd, baseline, dga, lolbin, fileless):
     try:
@@ -298,7 +280,6 @@ def _monitor_processes(logic, lolbas, byovd, baseline, dga, lolbin, fileless):
     except Exception as e:
         print(f"[DAEMON] ✖  WMI hook terminated: {e}")
 
-
 def _run_correlator(correlator):
     while True:
         time.sleep(60)
@@ -307,10 +288,7 @@ def _run_correlator(correlator):
         except Exception:
             pass
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-#  Entry point
-# ─────────────────────────────────────────────────────────────────────────────
+# ── Entry point
 
 def start_daemon(target_dir: str, webhook_url: str = "", webhooks: dict | None = None):
     """Starts the headless daemon monitor on the specified folder path."""

@@ -1,15 +1,4 @@
 # modules/chain_correlator.py — Behavioral Attack Chain Correlator
-#
-# Reads events from the shared event_timeline SQLite table (populated by all
-# detectors) and matches their sequence against multi-step attack chain definitions.
-# A single consolidated CRITICAL alert fires when a full chain completes within
-# the correlation window — replacing N fragmented low-signal alerts.
-#
-# Webhook: fires a rich SOC L1 alert (Discord/Slack/Teams) when a chain triggers.
-# Payload includes severity embed, MITRE ATT&CK link, per-event breakdown,
-# and chain-specific L1 triage steps.
-#
-# MITRE reference: https://attack.mitre.org/
 import json
 import uuid
 import sqlite3
@@ -151,7 +140,6 @@ ATTACK_CHAINS = [
     },
 ]
 
-
 class ChainCorrelator:
     """Correlates event sequences into high-confidence attack chain alerts."""
 
@@ -202,7 +190,7 @@ class ChainCorrelator:
 
         self._prune_old_events()
         return triggered
-    
+
     def _already_alerted(self, key: str) -> bool:
         """Dedup check keyed on chain_name + first matched event timestamp.
         Uses rsplit so chain names containing underscores are handled correctly."""
@@ -232,7 +220,7 @@ class ChainCorrelator:
             return [{"event_type": r[0], "detail": r[1], "pid": r[2], "timestamp": r[3]} for r in rows]
         except Exception:
             return []
-    
+
     def _prune_old_events(self):
         cutoff = (datetime.datetime.now() - datetime.timedelta(minutes=RETENTION_MINUTES)
                   ).strftime("%Y-%m-%d %H:%M:%S")
@@ -303,7 +291,7 @@ class ChainCorrelator:
                     (f["chain_name"], f["mitre"], f["severity"], f["description"], f["window_start"], now),
                 )
         except Exception:
-            pass  # Non-critical: operation continues regardless
+            pass
 
     def _print_alert(self, f: dict):
         icon = _SEVERITY_ICON.get(f["severity"], "🔴")

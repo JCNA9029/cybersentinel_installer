@@ -1,21 +1,4 @@
 # modules/ml_engine.py
-#
-# Offline Tier 2 machine learning engine.
-#
-# Responsibilities:
-#   - Extracts 2,381-dimensional PE feature vectors using the EMBER2024 thrember library
-#   - Runs Stage 1 binary classification (malicious / safe) via LightGBM
-#   - Parses the Import Address Table (IAT) for high-risk Windows API calls
-#   - Checks for the adaptive learner reload flag before each scan
-#
-# Hard limits:
-#   - Files larger than 100 MB are skipped to prevent memory exhaustion.
-#     Empirical analysis of EMBER2024 confirms 99.2% of malware is under 30 MB,
-#     so the 100 MB threshold provides near-complete ML coverage of realistic
-#     threat payloads while remaining practical on resource-constrained hardware.
-#     Files above 100 MB are processed by the Tier 1 cloud engine (hash-only,
-#     no size restriction applies there).
-#   - Non-PE files (missing MZ magic bytes) are rejected before feature extraction
 
 import os
 import numpy as np
@@ -40,21 +23,17 @@ class LocalScanner:
         threshold: float = 0.6,
     ):
         self.all_model_path = all_model_path
-        # Optimised v1 threshold (0.6) targets 0.00% FPR on LotL binaries
         self.threshold = threshold
 
         self.all_model = None
 
-    # ─────────────────────────────────────────────
-    #  MODEL LOADING
-    # ─────────────────────────────────────────────
+    # ── MODEL LOADING
 
     def _load_model(self, path: str) -> lgb.Booster | None:
         if not os.path.exists(path):
             print(f"[-] Model file '{path}' not found.")
             return None
 
-        # D1 Fix: Verify model file integrity before loading.
         # Detects tampering or accidental corruption — a modified model that
         # always returns SAFE would silently disable Tier 2 detection.
         if not self._verify_model_integrity(path):
@@ -119,9 +98,7 @@ class LocalScanner:
 
         return True
 
-    # ─────────────────────────────────────────────
-    #  FEATURE EXTRACTION
-    # ─────────────────────────────────────────────
+    # ── FEATURE EXTRACTION
 
     def extract_features(self, file_path: str) -> np.ndarray | None:
         """
@@ -165,13 +142,10 @@ class LocalScanner:
             print(f"[-] Feature extraction error: {e}")
             return None
         finally:
-            # Explicit memory release — critical in long-running daemon mode
             if file_data is not None:
                 del file_data
 
-    # ─────────────────────────────────────────────
-    #  IAT FORENSIC ANALYSIS
-    # ─────────────────────────────────────────────
+    # ── IAT FORENSIC ANALYSIS
 
     def get_suspicious_apis(self, file_path: str) -> list[str]:
         """
@@ -202,41 +176,33 @@ class LocalScanner:
                 for entry in pe.DIRECTORY_ENTRY_IMPORT:
                     for imp in entry.imports:
                         if imp.name:
-                            # errors='ignore' handles malware that embeds non-UTF-8 bytes in import names.
                             name = imp.name.decode("utf-8", errors="ignore")
                             if name in target_apis:
                                 suspicious_calls.append(name)
 
         except Exception:
-            pass  # Non-critical: operation continues regardless
+            pass
         finally:
-            # Guaranteed cleanup — pefile.PE.close() must be called to release the mmap handle.
             if pe is not None:
                 pe.close()
 
         return list(set(suspicious_calls))
 
-    # ─────────────────────────────────────────────
-    #  INFERENCE STAGES
-    # ─────────────────────────────────────────────
+    # ── INFERENCE STAGES
 
     def scan_stage1(self, file_path: str) -> dict | None:
         """
         Stage 1: binary malicious/benign classification.
         Returns a result dict or None if the file cannot be processed.
 
-        MODEL RELOAD: If the adaptive learner completed a retraining session since
-        the last scan (signalled via .model_updated flag), the booster is reloaded
-        from disk so corrections take effect immediately on the next scan.
         """
-        # Hot-reload model if AdaptiveLearner has updated it since last scan
         try:
             from .adaptive_learner import check_and_clear_reload_flag
             if check_and_clear_reload_flag():
                 print("[*] AdaptiveLearner: Reloading updated model...")
                 self.all_model = self._load_model(self.all_model_path)
         except Exception:
-            pass  # Reload is best-effort; never block a scan
+            pass
 
         spinner = Spinner("[*] Extracting dimensional features...")
         spinner.start()
@@ -273,9 +239,6 @@ class LocalScanner:
                 "drift_alert":    None,
             }
 
-            # ── Novel Feature: SHAP Explainability ───────────────────────────
-            # Compute feature attribution for every verdict (not just malicious)
-            # so analysts can understand why files are cleared as well as flagged.
             try:
                 from .explainability import get_explainer
                 sha256 = utils.get_sha256(file_path) if file_path else None
@@ -295,8 +258,6 @@ class LocalScanner:
             except Exception as e:
                 print(f"[-] SHAP: Non-critical explainability error: {e}")
 
-            # ── Novel Feature: Concept Drift Detection ────────────────────────
-            # Monitor score distribution for signs of model degradation.
             try:
                 from .drift_detector import get_drift_detector
                 sha256 = utils.get_sha256(file_path) if file_path else None
@@ -316,5 +277,4 @@ class LocalScanner:
         except Exception as e:
             print(f"[-] ML inference failed: {e}")
             return None
-
 

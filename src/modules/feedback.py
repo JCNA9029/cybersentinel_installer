@@ -1,8 +1,4 @@
 # modules/feedback.py — Analyst Feedback & Self-Correcting Learning Loop
-#
-# UPGRADE: Now integrated with adaptive_learner.py.
-# When an analyst marks FALSE_POSITIVE or FALSE_NEGATIVE, the correction is
-# automatically queued for incremental model retraining via AdaptiveLearner.
 
 import sqlite3
 import datetime
@@ -10,10 +6,7 @@ import os
 from . import utils
 from . import colors
 
-
-# ─────────────────────────────────────────────
-#  SECTION 1: INTERACTIVE FEEDBACK PROMPT (CLI)
-# ─────────────────────────────────────────────
+# ── SECTION 1: INTERACTIVE FEEDBACK PROMPT (CLI)
 
 def prompt_analyst_feedback(
     sha256:                   str,
@@ -74,10 +67,7 @@ def prompt_analyst_feedback(
     _save_feedback(sha256, filename, original_verdict, analyst_verdict, notes)
     return analyst_verdict
 
-
-# ─────────────────────────────────────────────
-#  SECTION 2: ML CORRECTION DISPATCHER
-# ─────────────────────────────────────────────
+# ── SECTION 2: ML CORRECTION DISPATCHER
 
 def _queue_ml_correction(
     sha256:                   str,
@@ -110,7 +100,6 @@ def _queue_ml_correction(
         )
     except Exception as e:
         colors.warning(f"[!] AdaptiveLearner queue error (non-fatal): {e}")
-
 
 def _register_anchor(
     sha256:                   str,
@@ -154,7 +143,6 @@ def _register_anchor(
     except Exception as e:
         colors.warning(f"[!] Anchor registration error (non-fatal): {e}")
 
-
 def submit_gui_correction(
     sha256:                   str,
     filename:                 str,
@@ -192,10 +180,7 @@ def submit_gui_correction(
             prefetched_features_json,
         )
 
-
-# ─────────────────────────────────────────────
-#  SECTION 3: DATABASE OPERATIONS
-# ─────────────────────────────────────────────
+# ── SECTION 3: DATABASE OPERATIONS
 
 def _save_feedback(
     sha256: str,
@@ -221,7 +206,6 @@ def _save_feedback(
     except sqlite3.Error as e:
         print(f"[-] Feedback save error: {e}")
 
-
 def save_feedback(
     sha256: str,
     filename: str,
@@ -231,7 +215,6 @@ def save_feedback(
 ):
     """Public alias for backward compatibility with analysis_manager."""
     _save_feedback(sha256, filename, original_verdict, analyst_verdict, notes)
-
 
 def get_feedback_stats() -> dict:
     """Returns aggregate feedback statistics for the dashboard."""
@@ -243,7 +226,6 @@ def get_feedback_stats() -> dict:
             return {row[0]: row[1] for row in rows}
     except sqlite3.Error:
         return {}
-
 
 def get_all_feedback(limit: int = 100) -> list:
     """Returns recent feedback records for display."""
@@ -272,10 +254,7 @@ def get_all_feedback(limit: int = 100) -> list:
     except sqlite3.Error:
         return []
 
-
-# ─────────────────────────────────────────────
-#  SECTION 4: EXCLUSION LIST MANAGEMENT
-# ─────────────────────────────────────────────
+# ── SECTION 4: EXCLUSION LIST MANAGEMENT
 
 def _add_to_exclusions(filename: str):
     """
@@ -296,19 +275,16 @@ def _add_to_exclusions(filename: str):
                 if filename.lower() in f.read().lower():
                     return
         except Exception:
-            pass  # Non-critical: operation continues regardless
+            pass
 
     try:
         with open(exclusion_file, "a") as f:
             ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
             f.write(f"\n{filename}  # Auto-added by analyst review on {ts}\n")
     except Exception:
-        pass  # Non-critical: operation continues regardless
+        pass
 
-
-# ─────────────────────────────────────────────
-#  SECTION 5: CLI DISPLAY
-# ─────────────────────────────────────────────
+# ── SECTION 5: CLI DISPLAY
 
 def display_feedback_history():
     """Prints a formatted feedback history table to the terminal."""
@@ -346,7 +322,6 @@ def display_feedback_history():
         f"Observed FP Rate: {fpr:.1f}%"
     )
 
-    # Show learning queue status
     try:
         from .adaptive_learner import get_learner
         summary = get_learner().get_queue_summary()
@@ -354,4 +329,4 @@ def display_feedback_history():
         trained = summary.get("trained", 0)
         print(f"  Learning Queue — Pending: {pending}  |  Already Trained: {trained}")
     except Exception:
-        pass  # Non-critical: operation continues regardless
+        pass

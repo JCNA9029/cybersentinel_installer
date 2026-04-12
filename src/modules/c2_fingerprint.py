@@ -1,10 +1,4 @@
 # modules/c2_fingerprint.py — C2 Traffic Fingerprinting Engine
-#
-# Three passive detection mechanisms — no traffic decryption required:
-#   1. Feodo IP blocklist  — checks outbound connections vs abuse.ch botnet C2 IPs
-#   2. DNS DGA entropy     — Shannon entropy analysis detects Domain Generation Algorithms
-#   3. JA3 TLS fingerprint — matches TLS ClientHello signatures vs abuse.ch SSLBL
-#                            (requires: pip install scapy + Npcap on Windows)
 
 import json
 import math
@@ -20,10 +14,7 @@ import psutil
 from . import utils
 from .intel_updater import load_feodo_blocklist, load_ja3_blocklist
 
-
-# ─────────────────────────────────────────────
-#  SHARED UTILITIES
-# ─────────────────────────────────────────────
+# ── SHARED UTILITIES
 
 def _shannon_entropy(s: str) -> float:
     """Shannon entropy of a string. High values (>3.5) indicate DGA names."""
@@ -35,14 +26,12 @@ def _shannon_entropy(s: str) -> float:
     n = len(s)
     return -sum((v / n) * math.log2(v / n) for v in freq.values())
 
-
 def _is_dga_suspicious(fqdn: str) -> tuple[bool, float]:
     """
     Heuristic DGA detection. Returns (suspicious, entropy).
     Criteria: entropy > 3.5  AND  label length > 12  OR  consonant/vowel ratio > 4.
     Known CDN/infra suffixes are whitelisted.
     """
-    # R5 Fix: Expanded CDN/infrastructure whitelist to reduce false positives
     # in enterprise environments with many high-entropy cloud service subdomains.
     SAFE_SUFFIXES = {
         # Google
@@ -87,10 +76,7 @@ def _is_dga_suspicious(fqdn: str) -> tuple[bool, float]:
     suspicious = entropy > 3.5 and (len(label) > 12 or cv_ratio > 4)
     return suspicious, entropy
 
-
-# ─────────────────────────────────────────────
-#  FEODO IP MONITOR
-# ─────────────────────────────────────────────
+# ── FEODO IP MONITOR
 
 class FeodoMonitor:
     """
@@ -124,7 +110,7 @@ class FeodoMonitor:
             try:
                 self._check()
             except Exception:
-                pass  # Non-critical: operation continues regardless
+                pass
             time.sleep(self.poll_interval)
 
     def _check(self):
@@ -148,7 +134,7 @@ class FeodoMonitor:
                     proc_name = p.name()
                     proc_path = p.exe()
             except Exception:
-                pass  # Non-critical: operation continues regardless
+                pass
 
             finding = {
                 "type": "C2_IP_MATCH", "remote_ip": conn.raddr.ip,
@@ -189,7 +175,7 @@ class FeodoMonitor:
                      f["pid"] or 0, now),
                 )
         except Exception:
-            pass  # Non-critical: operation continues regardless
+            pass
 
     def _print_alert(self, f: dict):
         print(
@@ -202,10 +188,7 @@ class FeodoMonitor:
             f"{'='*60}"
         )
 
-
-# ─────────────────────────────────────────────
-#  DNS DGA MONITOR
-# ─────────────────────────────────────────────
+# ── DNS DGA MONITOR
 
 class DgaMonitor:
     """
@@ -279,7 +262,7 @@ class DgaMonitor:
                     ("DGA_BEACON", json.dumps({"domain": f["domain"], "entropy": f["entropy"]}), 0, now),
                 )
         except Exception:
-            pass  # Non-critical: operation continues regardless
+            pass
 
     def format_alert(self, f: dict) -> str:
         """Formats a C2 finding dict into a human-readable alert string."""
@@ -294,10 +277,7 @@ class DgaMonitor:
             f"{'='*60}"
         )
 
-
-# ─────────────────────────────────────────────
-#  JA3 TLS FINGERPRINT MONITOR
-# ─────────────────────────────────────────────
+# ── JA3 TLS FINGERPRINT MONITOR
 
 def _compute_ja3(data: bytes) -> str | None:
     """
@@ -334,7 +314,6 @@ def _compute_ja3(data: bytes) -> str | None:
         return hashlib.md5(s.encode()).hexdigest()
     except Exception:
         return None
-
 
 class Ja3Monitor:
     """
@@ -402,7 +381,7 @@ class Ja3Monitor:
                                      json.dumps({"ja3": ja3, "src": src, "dst": dst}), now),
                                 )
                         except Exception:
-                            pass  # Non-critical: operation continues regardless
+                            pass
                         if self._webhook_url or self._webhooks.get("webhook_high"):
                             utils.route_webhook_alert(
                                 self._webhooks,

@@ -1,24 +1,4 @@
 # modules/lolbas_detector.py — Living-off-the-Land Binary (LoLBin) Abuse Detector
-#
-# Solves: CyberSentinel's WMI daemon previously skipped ALL Windows binaries with
-# `"c:\\windows" not in exe_path` — leaving the entire LoLBin attack surface unmonitored.
-# This module reverses that blind spot by specifically watching system binaries and
-# matching their command-line arguments against known abuse patterns.
-#
-# Production improvements over naive pattern matching:
-#   1. Command-line normalization — strips caret obfuscation, env var substitution,
-#      and whitespace tricks before matching so common bypasses do not evade detection.
-#   2. Path normalization — extracts the binary name from the full executable path
-#      so attackers cannot evade by copying binaries to different directories.
-#   3. Entropy scoring — detects Base64 and high-entropy argument strings that
-#      indicate obfuscation even when no specific pattern matches.
-#   4. Parent process context — the process lineage (who spawned this process) is
-#      included in the finding so the analyst can assess kill-chain context.
-#   5. Confidence scoring — findings are rated LOW/MEDIUM/HIGH based on how many
-#      independent signals fired, reducing false positive noise.
-#
-# Data source: LOLBAS Project (https://lolbas-project.github.io/)
-# Real-world threat: 79% of targeted attacks in 2023 used LoLBins (Picus Blue Report 2025)
 
 import os
 import re
@@ -95,7 +75,6 @@ TRUSTED_PARENTS = {
 # are statistically unlikely to be human-typed and indicate Base64/obfuscation.
 ENTROPY_THRESHOLD = 4.2
 
-
 def _shannon_entropy(s: str) -> float:
     """Computes Shannon entropy of a string. Higher = more random/obfuscated."""
     if not s or len(s) < 8:
@@ -104,7 +83,6 @@ def _shannon_entropy(s: str) -> float:
     freq = Counter(s)
     n = len(s)
     return -sum((c / n) * math.log2(c / n) for c in freq.values())
-
 
 def _normalize_cmdline(cmdline: str) -> str:
     """
@@ -128,7 +106,6 @@ def _normalize_cmdline(cmdline: str) -> str:
     cleaned = re.sub(r'\s+', ' ', cleaned).strip()
     return cleaned
 
-
 def _extract_binary_name(exe_path: str) -> str:
     """
     Extracts the binary filename from a full path.
@@ -142,7 +119,6 @@ def _extract_binary_name(exe_path: str) -> str:
         return ""
     path = exe_path.strip().strip('"\'')
     return os.path.basename(path).lower()
-
 
 def _high_entropy_args(cmdline: str) -> list[str]:
     """
@@ -162,7 +138,6 @@ def _high_entropy_args(cmdline: str) -> list[str]:
             if ent >= ENTROPY_THRESHOLD:
                 suspicious.append(clean[:40] + ("..." if len(clean) > 40 else ""))
     return suspicious
-
 
 class LolbasDetector:
     """
@@ -504,7 +479,7 @@ class LolbasDetector:
                     ),
                 )
         except Exception:
-            pass  # Non-critical: operation continues regardless
+            pass
 
         # Fire webhook if configured
         if self._webhook_url:

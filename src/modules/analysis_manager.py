@@ -1,21 +1,4 @@
 # modules/analysis_manager.py
-#
-# Pipeline orchestrator for the CyberSentinel multi-tier EDR framework.
-#
-# Responsibilities:
-#   - Routes files and hashes through the full detection pipeline:
-#     Allowlist -> Cache -> Cloud Consensus -> ML Engine -> AI Triage -> Containment
-#   - Manages GUI callback registration for thread-safe dialog interaction
-#   - Fires SOC webhook alerts on every confirmed malicious verdict
-#   - Coordinates the analyst feedback and adaptive learning pipeline
-#
-# Detection tiers:
-#   Tier 0    Allowlist / exclusion check
-#   Tier 0.5  SQLite cache (instant repeat-detection)
-#   Tier 1    Concurrent cloud consensus (VirusTotal, OTX, MetaDefender, MalwareBazaar)
-#   Tier 2    Offline LightGBM ML classifier (EMBER2024 PE features)
-#   Tier 3    Local Ollama LLM triage report (MITRE mapping, YARA rule generation)
-#   Tier 4    Containment (encrypted quarantine, Windows Firewall host isolation)
 
 import os
 import datetime
@@ -80,8 +63,8 @@ api_context = {
 
 def calculate_live_dss(api_list, file_path):
     if not api_list:
-        return 0.5 
-            
+        return 0.5
+
     unique_techs = set()
     for api in api_list:
         if api in api_context:
@@ -90,20 +73,20 @@ def calculate_live_dss(api_list, file_path):
                 # Extract base technique ID (e.g., "T1055")
                 base_tech = mitre_full.split(' ')[0]
                 unique_techs.add(base_tech)
-    
+
     # Check if we found anything after the full loop
     if not unique_techs:
         return 1.0 # Suspicious activity, but no mapped techniques
 
     # Sum weights for all unique techniques found
     raw_score = sum(TECHNIQUE_WEIGHTS.get(tid, 3) for tid in unique_techs)
-    
+
     # Masquerading Penalty (+1.5 to final score)
     filename = os.path.basename(file_path).lower()
     system_names = ["svchost.exe", "explorer.exe", "dllhost.exe", "services.exe", "lsass.exe", "autoclickers.exe"]
     if filename in system_names and "system32" not in file_path.lower():
         raw_score += 7.5 # (7.5 / 50 * 10 = 1.5 penalty)
-        
+
     # NORMALIZATION: 25 is the new 'Full Chain' threshold
     normalized_score = (raw_score / 25) * 10
     return min(10.0, round(normalized_score, 1))
@@ -129,7 +112,6 @@ class ScannerLogic:
         self.correlator    = ChainCorrelator(webhook_url=self.webhook_url, webhooks=self._webhooks())
         self.baseline      = BaselineEngine()
         utils.init_db()
-        # R1 Fix: Prune records older than 90 days at startup to prevent
         # unbounded database growth in long-running daemon deployments.
         try:
             utils.prune_old_records(days=90)
@@ -143,9 +125,7 @@ class ScannerLogic:
         # Entries are removed immediately after the feedback dialog consumes them.
         self._prefetch_features_cache: dict = {}
 
-    # ─────────────────────────────────────────────
-    #  LOGGING
-    # ─────────────────────────────────────────────
+    # ── LOGGING
 
     def log_event(self, message: str, print_to_screen: bool = True):
         """Appends a message to the session log and optionally prints it."""
@@ -157,9 +137,7 @@ class ScannerLogic:
                 pass
         self.session_log.append(message)
 
-    # ─────────────────────────────────────────────
-    #  TIER 1: CONCURRENT CLOUD CONSENSUS
-    # ─────────────────────────────────────────────
+    # ── TIER 1: CONCURRENT CLOUD CONSENSUS
 
     def _run_tier1_concurrent(self, file_hash: str) -> dict:
         """
@@ -258,10 +236,7 @@ class ScannerLogic:
             return self._run_tier1_concurrent(file_hash)
         return key_map[engine_name]()
 
-
-    # ─────────────────────────────────────────────
-    #  TIER 3: LLM ANALYST
-    # ─────────────────────────────────────────────
+    # ── TIER 3: LLM ANALYST
 
     def generate_llm_report(self, family_name, detected_apis, file_path, confidence_score, sha256, file_size_mb):
         # ── Pre-compute all deterministic values ──────────────────────────────
@@ -523,9 +498,7 @@ f"    Run: ollama create {self.llm_model} -f Modelfile"
         except Exception as e:
             return f"[-] CyberSentinel Analyst error: {e}"
 
-    # ─────────────────────────────────────────────
-    #  TIER 4: CONTAINMENT & QUARANTINE
-    # ─────────────────────────────────────────────
+    # ── TIER 4: CONTAINMENT & QUARANTINE
 
     def _prompt_quarantine(self, file_path, sha256, threat_source, verdict,
                            filename="", ai_already_done=False,
@@ -643,7 +616,6 @@ f"    Run: ollama create {self.llm_model} -f Modelfile"
         else:
             n = input("[?] Isolate host network? (Y/N): ").strip().upper() == "Y"
         if n:
-            # R4 Fix: Check return value — isolation can fail silently
             # if the Windows Firewall service is disabled or lacks privileges.
             isolated = network_isolation.isolate_network()
             if isolated:
@@ -716,7 +688,7 @@ f"    Run: ollama create {self.llm_model} -f Modelfile"
             prompt_analyst_feedback(sha256, fname, verdict,
                                     file_path=file_path or "",
                                     prefetched_features_json=prefetched_fj)
-    
+
     def _webhooks(self) -> dict:
      """Returns the webhook routing dict for route_webhook_alert."""
      return {
@@ -726,9 +698,7 @@ f"    Run: ollama create {self.llm_model} -f Modelfile"
         "webhook_chains":   self.webhook_chains,
     }
 
-    # ─────────────────────────────────────────────
-    #  ML THREAT HANDLER
-    # ─────────────────────────────────────────────
+    # ── ML THREAT HANDLER
 
     def _handle_critical_ml_threat(
         self,
@@ -762,7 +732,7 @@ f"    Run: ollama create {self.llm_model} -f Modelfile"
         # Release the feature array immediately to prevent memory growth in long-running daemon mode.
         if features is not None:
             del ml_result["features"]
-    
+
         # Resolve GUI callbacks — mirrors the pattern in scan_file() and _prompt_quarantine()
         gui = getattr(self, "gui_callbacks", None)
 
@@ -811,9 +781,7 @@ f"    Run: ollama create {self.llm_model} -f Modelfile"
             detected_apis=ml_result.get("detected_apis", []),
         )
 
-    # ─────────────────────────────────────────────
-    #  PUBLIC: SCAN FILE
-    # ─────────────────────────────────────────────
+    # ── PUBLIC: SCAN FILE
 
     def scan_file(self, file_path: str):
         """Main routing pipeline for physical file scans (Tiers 0.5 → 1 → 2 → 3 → 4)."""
@@ -1066,7 +1034,6 @@ f"    Run: ollama create {self.llm_model} -f Modelfile"
             detected_apis=ml_result.get("detected_apis", []),
         )
 
-        # ── Novel Feature: Dynamic Risk Scoring ──────────────────────────────
         # Compute context-aware composite risk score combining ML verdict,
         # time-of-day, active threats, chain presence, and baseline deviation.
         try:
@@ -1086,7 +1053,6 @@ f"    Run: ollama create {self.llm_model} -f Modelfile"
         except Exception as e:
             self.log_event(f"[-] Risk Scorer: Non-critical error: {e}")
 
-        # ── Novel Feature: SHAP Explanation output ───────────────────────────
         shap_expl = ml_result.get("shap_explanation")
         if shap_expl:
             self.log_event("[*] SHAP Feature Attribution (top factors):")
@@ -1100,7 +1066,6 @@ f"    Run: ollama create {self.llm_model} -f Modelfile"
             top_group = next(iter(shap_expl["group_summary"]))
             self.log_event(f"    Primary driver group: {top_group}")
 
-        # ── Novel Feature: Drift Alert propagation ───────────────────────────
         drift = ml_result.get("drift_alert")
         if drift:
             colors.warning(
@@ -1120,7 +1085,7 @@ f"    Run: ollama create {self.llm_model} -f Modelfile"
                         ("SUSPICIOUS_API", f"{api} — {filename}", 0, _now),
                     )
         except Exception:
-            pass  # Non-critical: operation continues regardless
+            pass
 
         if ml_verdict == "CRITICAL RISK":
             self._handle_critical_ml_threat(file_path, sha256, file_size_mb, ml_result)
@@ -1129,9 +1094,7 @@ f"    Run: ollama create {self.llm_model} -f Modelfile"
         else:
             colors.success("[+] File structure aligns with safe parameters.")
 
-    # ─────────────────────────────────────────────
-    #  PUBLIC: SCAN HASH
-    # ─────────────────────────────────────────────
+    # ── PUBLIC: SCAN HASH
 
     def scan_indicator(self, indicator: str):
         """
@@ -1261,7 +1224,6 @@ f"    Run: ollama create {self.llm_model} -f Modelfile"
 
     def scan_hash(self, file_hash: str):
         """Hash-only pipeline: Cache → concurrent Tier 1 cloud consensus."""
-        # V4 Fix: Validate hash format before any API call.
         # Accepts only hex strings of exactly 32 (MD5), 40 (SHA-1), or 64 (SHA-256) chars.
         # Rejects anything that could be used for URL injection into the API endpoint paths.
         import re as _re
@@ -1353,9 +1315,7 @@ f"    Run: ollama create {self.llm_model} -f Modelfile"
                 f"Cloud Consensus ({cloud_context})"
             )
 
-    # ─────────────────────────────────────────────
-    #  SESSION LOG
-    # ─────────────────────────────────────────────
+    # ── SESSION LOG
 
     def save_session_log(self):
         """

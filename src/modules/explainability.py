@@ -1,29 +1,4 @@
 # modules/explainability.py
-#
-# Novel Contribution 2 — SHAP-Based ML Explainability Engine
-#
-# Provides mathematically rigorous, per-scan feature attribution for every
-# LightGBM verdict using SHAP (SHapley Additive exPlanations).
-#
-# Problem solved:
-#   LightGBM outputs a probability score (e.g. 0.87) but cannot tell the analyst
-#   which specific file characteristics drove that decision. This is the
-#   "black box" problem. SHAP solves it by computing each feature's individual
-#   contribution to the final score using cooperative game theory (Shapley values).
-#
-# Academic grounding:
-#   Lundberg, S. M., & Lee, S. I. (2017). A unified approach to interpreting model
-#   predictions. Advances in Neural Information Processing Systems, 30.
-#
-# Output:
-#   A ranked list of the top N features that most influenced the verdict,
-#   with human-readable labels mapped from EMBER2024 feature group definitions.
-#
-# Design note:
-#   Feature count is determined dynamically from the SHAP output rather than
-#   hardcoded. Different thrember versions may produce different feature
-#   dimensions (2381, 2568, etc.). The label map and group ranges scale
-#   proportionally so the explanation is always valid regardless of version.
 
 import os
 import json
@@ -35,16 +10,13 @@ import numpy as np
 from . import utils
 from . import colors
 
-# ─────────────────────────────────────────────────────────────────────────────
-#  SHAP availability guard
-# ─────────────────────────────────────────────────────────────────────────────
+# ── SHAP availability guard
 
 try:
     import shap as _shap
     _SHAP_AVAILABLE = True
 except ImportError:
     _SHAP_AVAILABLE = False
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  DYNAMIC FEATURE LABEL BUILDER
@@ -120,7 +92,6 @@ def _build_feature_labels(n_features: int) -> list[str]:
 
     return labels[:n_features]
 
-
 def _build_group_ranges(n_features: int) -> dict:
     """
     Builds feature group boundary ranges proportional to the actual feature count.
@@ -155,10 +126,7 @@ def _build_group_ranges(n_features: int) -> dict:
 
     return ranges
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-#  DATABASE SCHEMA
-# ─────────────────────────────────────────────────────────────────────────────
+# ── DATABASE SCHEMA
 
 _CREATE_SHAP_TABLE = """
 CREATE TABLE IF NOT EXISTS shap_explanations (
@@ -173,7 +141,6 @@ CREATE TABLE IF NOT EXISTS shap_explanations (
     timestamp       TEXT    NOT NULL
 )
 """
-
 
 def _ensure_table():
     """Creates the SHAP explanations table if it does not exist."""
@@ -191,10 +158,7 @@ def _ensure_table():
     except sqlite3.Error as e:
         print(f"[-] Explainability: Table creation failed: {e}")
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-#  CORE CLASS
-# ─────────────────────────────────────────────────────────────────────────────
+# ── CORE CLASS
 
 class SHAPExplainer:
     """
@@ -464,13 +428,9 @@ class SHAPExplainer:
         except Exception:
             return []
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-#  MODULE-LEVEL SINGLETON
-# ─────────────────────────────────────────────────────────────────────────────
+# ── MODULE-LEVEL SINGLETON
 
 _instance: SHAPExplainer | None = None
-
 
 def get_explainer() -> SHAPExplainer:
     """Returns the module-level SHAPExplainer singleton."""

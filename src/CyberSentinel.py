@@ -18,8 +18,6 @@ from modules.lolbin_detector   import LolbinDetector
 from modules.c2_fingerprint    import Ja3Monitor, FeodoMonitor, DgaMonitor
 from modules.intel_updater     import update_all, feed_status
 
-
-
 class CyberSentinelUI:
     def __init__(self):
         self.logic        = ScannerLogic()
@@ -81,8 +79,6 @@ class CyberSentinelUI:
                     self.logic.webhook_url,
                     self.logic.llm_model,
                 )
-
-    # ── existing menu actions (unchanged) ──────────────────────────────────
 
     def _menu_analyze_path(self):
         print("\n" + "="*50)
@@ -147,7 +143,6 @@ class CyberSentinelUI:
         if not isinstance(self.logic.api_keys, dict):
             self.logic.api_keys = {}
 
-        # ── API Keys ────────────────────────────────────────────────────────
         print("\n--- Cloud API Keys ---")
         for eng in ("virustotal", "alienvault", "metadefender", "malwarebazaar"):
             status = "Active" if self.logic.api_keys.get(eng) else "Not Set"
@@ -158,7 +153,6 @@ class CyberSentinelUI:
             elif k:
                 self.logic.api_keys[eng] = k
 
-        # ── Webhook ─────────────────────────────────────────────────────────
         print("\n--- SOC Webhook ---")
         print(f"[*] Current: {self.logic.webhook_url or 'Not configured'}")
         wh = input("  New URL (CLEAR to remove / Enter to keep): ").strip()
@@ -167,7 +161,6 @@ class CyberSentinelUI:
         elif wh:
             self.logic.webhook_url = wh
 
-        # ── LLM Model Selection ─────────────────────────────────────────────
         print("\n--- Local AI Model (Ollama) ---")
         print(f"[*] Current model: {self.logic.llm_model}")
         print("[*] Scanning for installed Ollama models...")
@@ -245,8 +238,6 @@ class CyberSentinelUI:
         for r in rows:
             fname = (r["filename"][:20]+"..") if r["filename"] and len(r["filename"])>22 else str(r["filename"])
             print(f"  {r['sha256']:<64}  {fname:<22}  {colors.verdict_color(r['verdict']):<17}  {r['timestamp']}")
-
-    # ── NEW FEATURE MENUS ──────────────────────────────────────────────────
 
     def _menu_lolbas_scan(self):
         """Interactive LoLBin abuse check on a user-supplied process name + cmdline."""
@@ -367,8 +358,6 @@ class CyberSentinelUI:
         print("\n--- Analyst Feedback History ---")
         fb.display_feedback_history()
 
-    # ── MAIN LOOP ──────────────────────────────────────────────────────────
-
     def run(self):
         """Main application loop — displays the menu and dispatches selections."""
         self.print_banner()
@@ -428,9 +417,6 @@ class CyberSentinelUI:
                 input("\nPress Enter to return to menu...")
             else:
                 colors.warning("[-] Unrecognized command.")
-
-
-# ── ENTRY POINT ────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="CyberSentinel v1 EDR")

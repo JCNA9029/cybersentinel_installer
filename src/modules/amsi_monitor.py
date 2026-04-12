@@ -1,16 +1,4 @@
 # modules/amsi_monitor.py — Fileless & In-Memory Attack Detection
-#
-# Two detection layers:
-#   1. Windows Event Log monitoring — reads PowerShell ScriptBlock log (Event ID 4104)
-#      and flags obfuscation indicators without any kernel hooks.
-#   2. AMSI registration via ctypes — registers CyberSentinel as a COM-based AMSI
-#      provider so the OS pipes every script through our scanner before execution.
-#      (Requires Administrator + Python win32 extensions on Windows)
-#
-# Real-world impact: Fileless malware runs entirely in memory, leaving no disk artifacts
-# for file-based scanners to find. AMSI is the only point where the payload is
-# visible in cleartext — even heavy obfuscation is stripped by the time AMSI fires.
-# MITRE: T1059.001 (PowerShell), T1027 (Obfuscated Files), T1620 (Reflective Code Loading)
 
 import re
 import json
@@ -49,7 +37,6 @@ OBFUSCATION_PATTERNS: list[tuple[str, str, str]] = [
 # Minimum score to raise an alert (each matched pattern = 1 point)
 ALERT_THRESHOLD = 2
 
-
 class AmsiMonitor:
     """
     Monitors PowerShell ScriptBlock execution logs (Event ID 4104) for obfuscation
@@ -82,9 +69,7 @@ class AmsiMonitor:
         """Signals the monitoring thread to stop."""
         self._running = False
 
-    # ─────────────────────────────────────────────
-    #  EVENT LOG WATCHER
-    # ─────────────────────────────────────────────
+    # ── EVENT LOG WATCHER
 
     def _watch_eventlog(self):
         """Tails the PowerShell Operational event log for ScriptBlock events."""
@@ -125,14 +110,12 @@ class AmsiMonitor:
                     self._analyse_script(script_text, pid=0)
 
             except Exception:
-                pass  # Non-critical: operation continues regardless
+                pass
             time.sleep(2)
 
         win32evtlog.CloseEventLog(handle)
 
-    # ─────────────────────────────────────────────
-    #  SCRIPT ANALYSIS
-    # ─────────────────────────────────────────────
+    # ── SCRIPT ANALYSIS
 
     def analyse_script(self, script_text: str, pid: int = 0) -> dict | None:
         """
@@ -167,9 +150,7 @@ class AmsiMonitor:
         self._print_alert(result)
         return result
 
-    # ─────────────────────────────────────────────
-    #  PERSISTENCE & DISPLAY
-    # ─────────────────────────────────────────────
+    # ── PERSISTENCE & DISPLAY
 
     def _persist(self, r: dict):
         now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -187,7 +168,7 @@ class AmsiMonitor:
                      r["pid"], now),
                 )
         except Exception:
-            pass  # Non-critical: operation continues regardless
+            pass
 
     def _print_alert(self, r: dict):
         indicators = "\n    ".join(f["indicator"] for f in r["findings"])

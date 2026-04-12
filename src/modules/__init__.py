@@ -1,8 +1,4 @@
 # modules/__init__.py
-#
-# Package initializer for the CyberSentinel modules package.
-# Exports all public classes and functions used by the entry points
-# (CyberSentinel.py, gui.py, dashboard.py, eval_harness.py).
 
 from . import utils
 from .analysis_manager  import ScannerLogic
@@ -26,7 +22,6 @@ from .explainability    import SHAPExplainer, get_explainer
 from .risk_scorer       import DynamicRiskScorer, get_risk_scorer
 from .drift_detector    import DriftDetector, get_drift_detector
 
-# Additional module exports
 from .loading          import Spinner
 from .ml_engine         import LocalScanner
 from .quarantine        import quarantine_file

@@ -11,10 +11,7 @@ import datetime
 from . import colors, utils
 from .chain_correlator import ChainCorrelator
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-#  SUSPICIOUS CONTENT PATTERNS (Approach A)
-# ─────────────────────────────────────────────────────────────────────────────
+# ── SUSPICIOUS CONTENT PATTERNS (Approach A)
 
 _SUSPICIOUS_PATTERNS = [
     # AMSI / Defender bypass
@@ -78,10 +75,7 @@ _COMPILED_PATTERNS: list[tuple[re.Pattern, str]] = [
     (re.compile(p), desc) for p, desc in _SUSPICIOUS_PATTERNS
 ]
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-#  WINDOWS MEMORY CONSTANTS
-# ─────────────────────────────────────────────────────────────────────────────
+# ── WINDOWS MEMORY CONSTANTS
 
 _MEM_COMMIT             = 0x00001000
 _MEM_PRIVATE            = 0x00020000
@@ -119,7 +113,6 @@ _JIT_EXCLUSIONS_FILE = os.path.join(
     "jit_exclusions.txt",
 )
 
-
 def _load_jit_exclusions() -> frozenset:
     """
     Reads jit_exclusions.txt and merges with the base set.
@@ -154,11 +147,9 @@ def _load_jit_exclusions() -> frozenset:
         pass
     return _JIT_BASE | frozenset(names)
 
-
 # Module-level set — mutable so reload_jit_exclusions() can replace it
 _JIT_PROCESS_NAMES: frozenset = _load_jit_exclusions()
 _jit_debug_printed: set[str] = set()  # dedup guard — print each process name once only
-
 
 def reload_jit_exclusions() -> frozenset:
     """
@@ -169,7 +160,6 @@ def reload_jit_exclusions() -> frozenset:
     global _JIT_PROCESS_NAMES
     _JIT_PROCESS_NAMES = _load_jit_exclusions()
     return _JIT_PROCESS_NAMES
-
 
 _jit_exclusion_lock = threading.Lock()
 
@@ -239,7 +229,6 @@ _HIGH_VALUE_NON_JIT = frozenset({
 # ─────────────────────────────────────────────────────────────────────────────
 HIGH_VALUE_ONLY = True
 
-
 class _MemoryBasicInfo(ctypes.Structure):
     _fields_ = [
         ("BaseAddress",       ctypes.c_size_t),
@@ -250,7 +239,6 @@ class _MemoryBasicInfo(ctypes.Structure):
         ("Protect",           ctypes.wintypes.DWORD),
         ("Type",              ctypes.wintypes.DWORD),
     ]
-
 
 def _scan_process_memory_windows(pid: int, process_name: str = "") -> list[str]:
     """
@@ -358,7 +346,6 @@ def _scan_process_memory_windows(pid: int, process_name: str = "") -> list[str]:
     findings.extend(f"[{confidence} CONFIDENCE] {h}" for h in raw_hits)
     return findings
 
-
 def _scan_process_memory(pid: int, process_name: str = "") -> list[str]:
     """Dispatcher: VirtualQueryEx on Windows, psutil on Linux/macOS."""
     if os.name == "nt":
@@ -377,10 +364,7 @@ def _scan_process_memory(pid: int, process_name: str = "") -> list[str]:
     except Exception:
         return []
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-#  AMSI COM BRIDGE
-# ─────────────────────────────────────────────────────────────────────────────
+# ── AMSI COM BRIDGE
 
 class AmsiScanner:
     """
@@ -464,10 +448,7 @@ class AmsiScanner:
             except Exception:
                 pass
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-#  FILELESS MONITOR ORCHESTRATOR
-# ─────────────────────────────────────────────────────────────────────────────
+# ── FILELESS MONITOR ORCHESTRATOR
 
 class FilelessMonitor:
     """

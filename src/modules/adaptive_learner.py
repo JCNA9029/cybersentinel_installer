@@ -1,31 +1,4 @@
 # modules/adaptive_learner.py — Self-Correcting ML Engine with Label Poisoning Protection
-#
-# SAFEGUARDS AGAINST MISLABELING:
-#
-#   1. Correction Quarantine
-#      Every correction enters status='PENDING_REVIEW' first — not immediately
-#      trainable. It only becomes 'PENDING' (trainable) after passing all
-#      automated validation checks. Nothing trains from unvalidated data.
-#
-#   2. Automated Conflict Detection (3 checks run on every submission)
-#      a) Cross-source conflict  — does the existing cache verdict contradict
-#         the analyst's label? (e.g. VT said MALICIOUS, analyst said FP)
-#      b) Duplicate conflict     — has the same SHA-256 been corrected before
-#         with a DIFFERENT label? Flags the contradiction for review.
-#      c) Self-contradiction     — analyst marked FP on a file originally
-#         flagged SAFE, or FN on a file originally flagged MALICIOUS — logically
-#         impossible; rejected outright.
-#
-#   3. Correction Revocation
-#      Any PENDING or PENDING_REVIEW correction can be revoked by an analyst
-#      before it enters a retraining session. If a correction was already
-#      TRAINED, revoke_correction() rolls the model back to the backup snapshot
-#      taken before that session.
-#
-#   4. Conflict Resolution
-#      CONFLICTED corrections are held in quarantine and displayed in the GUI
-#      for manual review. An analyst can approve them (→ PENDING) or reject
-#      them (→ REVOKED) explicitly.
 
 import os
 import json
@@ -40,9 +13,7 @@ from . import utils
 from . import colors
 from .loading import Spinner
 
-# ─────────────────────────────────────────────────────────────────────────────
-#  CONSTANTS
-# ─────────────────────────────────────────────────────────────────────────────
+# ── CONSTANTS
 
 from ._paths import MODELS_DIR as _MODELS_DIR
 MODEL_PATH     = str(_MODELS_DIR / "CyberSentinel_v2.model")
@@ -118,9 +89,7 @@ ANCHOR_RECENT_DAYS    = 90     # Prefer anchors newer than this many days
 ANCHOR_EXPIRY_DAYS    = 365    # Exclude anchors older than this (0 = never expire)
 MAX_IMBALANCE_RATIO   = 3.0    # Maximum majority:minority ratio in final batch
 
-# ─────────────────────────────────────────────────────────────────────────────
-#  DATABASE SCHEMA
-# ─────────────────────────────────────────────────────────────────────────────
+# ── DATABASE SCHEMA
 
 _CREATE_ANCHOR_STORE = """
 CREATE TABLE IF NOT EXISTS anchor_samples (
@@ -169,7 +138,6 @@ CREATE TABLE IF NOT EXISTS retraining_log (
 )
 """
 
-
 def _ensure_tables():
     try:
         with sqlite3.connect(utils.DB_FILE) as conn:
@@ -189,10 +157,7 @@ def _ensure_tables():
     except sqlite3.Error as e:
         print(f"[-] AdaptiveLearner: Table init failed: {e}")
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-#  CORE CLASS
-# ─────────────────────────────────────────────────────────────────────────────
+# ── CORE CLASS
 
 class AdaptiveLearner:
     """
@@ -218,9 +183,7 @@ class AdaptiveLearner:
         self.num_new_trees = num_new_trees
         _ensure_tables()
 
-    # ──────────────────────────────────────────────────────────────────────────
-    #  SECTION 1: CORRECTION INTAKE WITH VALIDATION QUARANTINE
-    # ──────────────────────────────────────────────────────────────────────────
+    # ── SECTION 1: CORRECTION INTAKE WITH VALIDATION QUARANTINE
 
     def schedule_correction(
         self,
@@ -457,9 +420,7 @@ class AdaptiveLearner:
             "message": f"Correction queued. Queue depth: {pending_count}/{self.threshold}"
         }
 
-    # ──────────────────────────────────────────────────────────────────────────
-    #  SECTION 2: CONFLICT RESOLUTION
-    # ──────────────────────────────────────────────────────────────────────────
+    # ── SECTION 2: CONFLICT RESOLUTION
 
     def approve_conflicted(self, queue_id: int) -> bool:
         """
@@ -507,9 +468,7 @@ class AdaptiveLearner:
                 print(f"[-] AdaptiveLearner: Reject failed: {e}")
                 return False
 
-    # ──────────────────────────────────────────────────────────────────────────
-    #  SECTION 3: CORRECTION REVOCATION + MODEL ROLLBACK
-    # ──────────────────────────────────────────────────────────────────────────
+    # ── SECTION 3: CORRECTION REVOCATION + MODEL ROLLBACK
 
     def revoke_correction(self, queue_id: int) -> dict:
         """
@@ -642,9 +601,7 @@ class AdaptiveLearner:
 
         return result
 
-    # ──────────────────────────────────────────────────────────────────────────
-    #  SECTION 4: QUEUE QUERIES
-    # ──────────────────────────────────────────────────────────────────────────
+    # ── SECTION 4: QUEUE QUERIES
 
     def register_anchor(
         self,
@@ -675,7 +632,6 @@ class AdaptiveLearner:
         if not features_json:
             return False
 
-        # D3 Fix: Cross-validate anchor label against scan cache
         try:
             with sqlite3.connect(utils.DB_FILE) as conn:
                 cached = conn.execute(
@@ -1031,9 +987,7 @@ class AdaptiveLearner:
         except sqlite3.Error as e:
             print(f"[-] AdaptiveLearner: Queue clear failed: {e}")
 
-    # ──────────────────────────────────────────────────────────────────────────
-    #  SECTION 5: RETRAINING ENGINE
-    # ──────────────────────────────────────────────────────────────────────────
+    # ── SECTION 5: RETRAINING ENGINE
 
     def _run_retraining_session(self, force: bool = False) -> dict:
         """
@@ -1296,9 +1250,7 @@ class AdaptiveLearner:
 
         return result
 
-    # ──────────────────────────────────────────────────────────────────────────
-    #  SECTION 6: FEATURE HELPERS
-    # ──────────────────────────────────────────────────────────────────────────
+    # ── SECTION 6: FEATURE HELPERS
 
     def _extract_and_serialize(self, file_path: str) -> str | None:
         """
@@ -1406,9 +1358,7 @@ class AdaptiveLearner:
 
         return usable
 
-    # ──────────────────────────────────────────────────────────────────────────
-    #  SECTION 7: BACKUP AND AUDIT
-    # ──────────────────────────────────────────────────────────────────────────
+    # ── SECTION 7: BACKUP AND AUDIT
 
     def _backup_model(self, session_id: str) -> str | None:
         os.makedirs(BACKUP_DIR, exist_ok=True)
@@ -1433,7 +1383,7 @@ class AdaptiveLearner:
             for old in backups[:-keep]:
                 os.remove(os.path.join(BACKUP_DIR, old))
         except Exception:
-            pass  # Non-critical: operation continues regardless
+            pass
 
     def _write_retraining_log(self, result: dict, timestamp: str):
         try:
@@ -1463,15 +1413,11 @@ class AdaptiveLearner:
             with open(AUDIT_LOG_PATH, "a", encoding="utf-8") as f:
                 f.write(json.dumps(record) + "\n")
         except Exception:
-            pass  # Non-critical: operation continues regardless
+            pass
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-#  MODEL RELOAD FLAG
-# ─────────────────────────────────────────────────────────────────────────────
+# ── MODEL RELOAD FLAG
 
 _RELOAD_FLAG = str(_MODELS_DIR / ".model_updated")
-
 
 def _set_model_reload_flag():
     os.makedirs(os.path.dirname(_RELOAD_FLAG), exist_ok=True)
@@ -1479,8 +1425,7 @@ def _set_model_reload_flag():
         with open(_RELOAD_FLAG, "w") as f:
             f.write(datetime.datetime.now().isoformat())
     except Exception:
-        pass  # Non-critical: operation continues regardless
-
+        pass
 
 def check_and_clear_reload_flag() -> bool:
     """Returns True and removes the flag file if the model was updated since last scan."""
@@ -1488,17 +1433,13 @@ def check_and_clear_reload_flag() -> bool:
         try:
             os.remove(_RELOAD_FLAG)
         except Exception:
-            pass  # Non-critical: operation continues regardless
+            pass
         return True
     return False
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-#  SINGLETON
-# ─────────────────────────────────────────────────────────────────────────────
+# ── SINGLETON
 
 _instance: AdaptiveLearner | None = None
-
 
 def get_learner() -> AdaptiveLearner:
     """Returns the module-level AdaptiveLearner singleton instance."""
