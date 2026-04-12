@@ -4,9 +4,9 @@
 # excluded ALL c:\windows binaries. Attackers leverage this exclusion intentionally —
 # 79% of targeted attacks in 2023 used LOLBins (Picus Blue Report 2025).
 #
-# This module loads the LOLBAS project pattern database (data/lolbas_patterns.json)
-# and checks every new process name + command line against known abuse argument patterns.
-# It is purely a static lookup — zero network calls, negligible CPU cost.
+# Loads from intel/lolbas.json via intel_updater (the full live LOLBAS project feed).
+# Falls back to an empty pattern set if the feed is unavailable — non-fatal.
+# It is purely a static lookup — zero network calls at check time, negligible CPU cost.
 
 import json
 import os
@@ -17,7 +17,7 @@ import sqlite3
 import datetime
 from . import utils
 
-_DATA_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "lolbas_patterns.json")
+from .intel_updater import load_lolbas
 
 @dataclass
 class LolbinAlert:
@@ -42,18 +42,41 @@ class LolbinDetector:
         self._load()
 
     def _load(self):
-        if not os.path.exists(_DATA_PATH):
-            print(f"[!] LolbinDetector: pattern database not found at {_DATA_PATH}")
-            return
         try:
-            with open(_DATA_PATH, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            for entry in data.get("binaries", []):
-                key = entry["name"].lower()
-                self._patterns[key] = entry
-            print(f"[+] LolbinDetector: {len(self._patterns)} LOLBAS patterns loaded.")
+            raw = load_lolbas()
+            for entry in raw:
+                name = (entry.get("Name") or "").lower().strip()
+                if not name:
+                    continue
+
+                # Collect all Commands for this binary
+                commands = entry.get("Commands") or []
+
+                # Pick the first non-empty MitreID and Category across all commands
+                mitre  = next((c.get("MitreID",  "") for c in commands if c.get("MitreID")),  "")
+                tactic = next((c.get("Category", "") for c in commands if c.get("Category")), "")
+
+                # Extract flag-style arguments (-flag or /flag) from each Command
+                # example: "certutil -urlcache -split -f http://..." -> ["-urlcache", "-split", "-f"]
+                patterns: list[str] = []
+                for cmd in commands:
+                    for token in (cmd.get("Command") or "").split():
+                        if token.startswith(("-", "/")) and len(token) > 1:
+                            flag = token.rstrip(".,;:").lower()
+                            if flag not in patterns:
+                                patterns.append(flag)
+
+                self._patterns[name] = {
+                    "name":        name,
+                    "mitre":       mitre,
+                    "tactic":      tactic,
+                    "description": entry.get("Description", ""),
+                    "patterns":    patterns,
+                }
+
+            print(f"[+] LolbinDetector: {len(self._patterns)} LOLBAS entries loaded from intel feed.")
         except Exception as e:
-            print(f"[!] LolbinDetector: failed to load patterns — {e}")
+            print(f"[!] LolbinDetector: failed to load intel feed — {e}")
 
     def check(self, process_name: str, command_line: str, pid: int = 0) -> LolbinAlert | None:
         if not process_name:
