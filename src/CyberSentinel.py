@@ -23,7 +23,11 @@ class CyberSentinelUI:
         self.logic        = ScannerLogic()
         self.byovd        = ByovdDetector()
         self.lolbas       = LolbasDetector()
+        self.correlator   = ChainCorrelator()
         _wh = self.logic._webhooks()
+        self.feodo        = FeodoMonitor(webhook_url=self.logic.webhook_url)
+        self.dga          = DgaMonitor(webhook_url=self.logic.webhook_url)
+        self.ja3          = Ja3Monitor(webhook_url=self.logic.webhook_url)
         self.correlator._webhook_url  = self.logic.webhook_url
         self.correlator._webhooks     = _wh
         self.byovd.webhook_url        = self.logic.webhook_url
@@ -38,14 +42,9 @@ class CyberSentinelUI:
         self.lolbin       = LolbinDetector()
         self.fileless     = FilelessMonitor(correlator=self.correlator)
         self.amsi_scanner = AmsiScanner()
-        _wh = self.logic.webhook_url
-        self.feodo        = FeodoMonitor(webhook_url=_wh)
-        self.dga          = DgaMonitor(webhook_url=_wh)
-        self.ja3          = Ja3Monitor(webhook_url=_wh)
         # Start background C2 monitors
         self.feodo.start()
         self.ja3.start()
-
     def print_banner(self):
         """Prints the ASCII art CyberSentinel banner to the terminal."""
         colors.header(r"""
@@ -448,7 +447,9 @@ if __name__ == "__main__":
 
     elif args.daemon:
         from modules.daemon_monitor import start_daemon
-        start_daemon(args.daemon, webhook_url=self.logic.webhook_url, webhooks=self.logic._webhooks())
+        from modules import ScannerLogic
+        _logic = ScannerLogic()
+        start_daemon(args.daemon, webhook_url=_logic.webhook_url, webhooks=_logic._webhooks())
 
     elif args.dashboard:
         import subprocess, sys
