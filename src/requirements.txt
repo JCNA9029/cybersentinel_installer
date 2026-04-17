@@ -25,6 +25,9 @@ ollama>=0.1.0           # Local LLM interface
 # ── SOC Dashboard ─────────────────────────────────────────────
 flask>=3.0.0            # Web dashboard (dashboard.py)
 
+# ── YARA Validation / Scanning ────────────────────────────────
+yara-python>=3.11.0     # Custom YARA rule scanning & AI validation
+
 # ── Desktop GUI ───────────────────────────────────────────────
 PyQt6>=6.6.0            # Native desktop GUI (gui.py)
 
