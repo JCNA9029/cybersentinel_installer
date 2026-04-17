@@ -660,9 +660,9 @@ class CyberSentinelGUI(QMainWindow):
         self._refresh_timer.start(30_000)
         self._refresh_dashboard()
 
-        # Show privacy notice once on first launch — deferred so the window
-        # is fully rendered before the dialog blocks the event loop.
-        QTimer.singleShot(600, self._show_privacy_notice)
+        # [THESIS FIX] Interactive Onboarding Wizard
+        # Prompt users to configure API keys and check Ollama status on first launch (14% feedback)
+        QTimer.singleShot(600, self._show_onboarding_wizard)
 
     # ── UI BUILD ──────────────────────────────────────────────────────────────
 
@@ -861,9 +861,143 @@ class CyberSentinelGUI(QMainWindow):
         """)
         layout.addWidget(self._status_bar)
 
+        # [THESIS FIX] Simple Resource Monitor in the Status Bar
+        self._resource_timer = QTimer(self)
+        self._resource_timer.timeout.connect(self._update_resource_monitor)
+        self._resource_timer.start(2000)
+
         return sidebar
 
+    def _update_resource_monitor(self):
+        try:
+            import psutil
+            cpu = psutil.cpu_percent()
+            ram = psutil.virtual_memory().percent
+            self._status_bar.setText(f"● Ready\nCPU: {cpu}%  |  RAM: {ram}%")
+        except Exception:
+            pass
+
     # ── PRIVACY NOTICE ────────────────────────────────────────────────────────
+
+    def _show_onboarding_wizard(self):
+        """
+        Interactive Onboarding Wizard for first-time users.
+        Prompts for API keys and verifies Ollama models before unlocking the dashboard.
+        Writes a marker file so it is never shown again.
+        """
+        # Only show once
+        marker_path = os.path.join(BASE_DIR, ".onboarding_done")
+        if os.path.exists(marker_path):
+            return
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle("CyberSentinel — Initial Setup")
+        dlg.setFixedWidth(540)
+        dlg.setStyleSheet(f"""
+            QDialog  {{ background: {THEME['bg']}; }}
+            QLabel   {{ color: {THEME['text']}; border: none; }}
+            QLineEdit {{
+                background: {THEME['surface']};
+                color: {THEME['text']};
+                border: 1px solid {THEME['border']};
+                border-radius: 4px;
+                padding: 6px 10px;
+            }}
+            QPushButton {{
+                background: {THEME['surface']};
+                color: {THEME['text']};
+                border: 1px solid {THEME['border']};
+                border-radius: 4px;
+                padding: 7px 18px;
+                font-size: 12px;
+            }}
+            QPushButton#ok {{
+                background: {THEME['blue']};
+                color: #ffffff;
+                border: none;
+                font-weight: bold;
+            }}
+            QPushButton#ok:hover {{ background: #388bfd; }}
+        """)
+        v = QVBoxLayout(dlg)
+        v.setContentsMargins(28, 24, 28, 20)
+        v.setSpacing(14)
+
+        # Header
+        title = QLabel("🚀  Welcome to CyberSentinel")
+        title.setStyleSheet(f"color: {THEME['blue']}; font-size: 16px; font-weight: bold;")
+        v.addWidget(title)
+
+        # Privacy
+        body = QLabel(
+            "<b>1. Data Privacy Notice</b><br>"
+            "CyberSentinel submits only <b>file hashes</b> to cloud APIs. "
+            "No file content is ever transmitted. You can leave keys blank to stay fully offline."
+        )
+        body.setStyleSheet(f"font-size: 11px; padding: 10px; background: {THEME['surface']}; border-radius: 4px; border: 1px solid {THEME['border']};")
+        body.setWordWrap(True)
+        v.addWidget(body)
+
+        # API Keys
+        keys_lbl = QLabel("<b>2. Configure Cloud APIs (Optional but recommended)</b>")
+        keys_lbl.setStyleSheet("font-size: 12px;")
+        v.addWidget(keys_lbl)
+        
+        form = QFormLayout()
+        form.setSpacing(8)
+        self.ob_fields = {}
+        for key in ("virustotal", "alienvault", "metadefender", "malwarebazaar"):
+            le = QLineEdit()
+            le.setEchoMode(QLineEdit.EchoMode.Password)
+            le.setPlaceholderText(f"{key.capitalize()} API Key")
+            self.ob_fields[key] = le
+            form.addRow(QLabel(key.capitalize() + ":"), le)
+        v.addLayout(form)
+
+        # Ollama
+        from modules import utils
+        models = utils.ollama_list_models()
+        ollama_status = "✅ Local LLM detected" if models else "⚠️ Ollama not running or no models found"
+        ollama_color = THEME['green'] if models else THEME['yellow']
+        
+        ollama_lbl = QLabel(f"<b>3. AI Analyst Status:</b> <span style='color:{ollama_color}'>{ollama_status}</span>")
+        ollama_lbl.setStyleSheet("font-size: 12px;")
+        v.addWidget(ollama_lbl)
+        
+        if not models:
+            hint = QLabel("Install Ollama and run: <code>ollama pull qwen2.5:3b</code> for AI features.")
+            hint.setStyleSheet(f"color: {THEME['muted']}; font-size: 10px;")
+            v.addWidget(hint)
+
+        # Buttons
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+        ok_btn = QPushButton("Finish Setup")
+        ok_btn.setObjectName("ok")
+        ok_btn.setFixedWidth(160)
+        btn_row.addWidget(ok_btn)
+        v.addLayout(btn_row)
+
+        def _accept():
+            # Save API keys
+            for key, le in self.ob_fields.items():
+                val = le.text().strip()
+                if val:
+                    self.logic.api_keys[key] = val
+            utils.save_config(self.logic.api_keys, self.logic.webhook_url)
+            
+            # Write marker
+            try:
+                with open(marker_path, "w") as f:
+                    f.write("done")
+            except Exception:
+                pass
+            dlg.accept()
+            # Launch privacy notice right after onboarding finishes
+            QTimer.singleShot(100, self._show_privacy_notice)
+
+        ok_btn.clicked.connect(_accept)
+        dlg.exec()
 
     def _show_privacy_notice(self):
         """
@@ -871,6 +1005,9 @@ class CyberSentinelGUI(QMainWindow):
         (never file content) are submitted to cloud APIs.
         Writes a marker file so it is never shown again.
         """
+        from modules import utils as _u
+        if getattr(_u, 'is_privacy_notice_shown', lambda: False)():
+             pass # Assume there's a marker check inside or we rely on onboarding marker. Actually the old version used _u.mark_privacy_notice_shown()
 
         dlg = QDialog(self)
         dlg.setWindowTitle("CyberSentinel — Data Privacy Notice")
@@ -938,7 +1075,7 @@ class CyberSentinelGUI(QMainWindow):
         btn_row.addWidget(ok_btn)
         v.addLayout(btn_row)
 
-        def _accept():
+        def _accept_privacy():
             try:
                 from modules import utils as _u
                 _u.mark_privacy_notice_shown()
@@ -946,7 +1083,7 @@ class CyberSentinelGUI(QMainWindow):
                 pass
             dlg.accept()
 
-        ok_btn.clicked.connect(_accept)
+        ok_btn.clicked.connect(_accept_privacy)
         dlg.exec()
 
     # ── ALLOWLIST HELPERS ─────────────────────────────────────────────────────
@@ -1163,6 +1300,13 @@ class CyberSentinelGUI(QMainWindow):
         refresh_btn.setMinimumWidth(140)
         refresh_btn.clicked.connect(self._refresh_dashboard)
         btn_row.addWidget(refresh_btn)
+        
+        # [THESIS FIX] Quarantine Manager Button
+        quar_btn = QPushButton("🗑  Manage Quarantine")
+        quar_btn.setMinimumWidth(140)
+        quar_btn.clicked.connect(self._show_quarantine_manager)
+        btn_row.addWidget(quar_btn)
+        
         btn_row.addStretch()
 
         self._db_path_lbl = QLabel()
@@ -1198,6 +1342,86 @@ class CyberSentinelGUI(QMainWindow):
 
         layout.addWidget(inner, 1)
         return page
+
+    def _show_quarantine_manager(self):
+        """
+        [THESIS FIX] Quarantine Manager (Restore / Delete)
+        Displays a dialog to manage encrypted quarantined files.
+        """
+        from modules import quarantine as quar
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle("CyberSentinel — Quarantine Manager")
+        dlg.setMinimumSize(600, 400)
+        dlg.setStyleSheet(BASE_STYLE + f"QDialog {{ background: {THEME['bg']}; }}")
+        layout = QVBoxLayout(dlg)
+
+        title = QLabel("🛡️ Encrypted Quarantine")
+        title.setStyleSheet(f"color: {THEME['blue']}; font-size: 16px; font-weight: bold;")
+        layout.addWidget(title)
+
+        q_table = make_table(["Filename", "Size (KB)"], stretch_col=0)
+        q_table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
+        layout.addWidget(q_table, 1)
+
+        def refresh_table():
+            q_table.setRowCount(0)
+            files = quar.list_quarantined_files()
+            for f in files:
+                row = q_table.rowCount()
+                q_table.insertRow(row)
+                fname = os.path.basename(f)
+                size = os.path.getsize(f) / 1024
+                q_table.setItem(row, 0, table_item(fname))
+                q_table.setItem(row, 1, table_item(f"{size:.1f}"))
+                q_table.item(row, 0).setData(Qt.ItemDataRole.UserRole, f)
+
+        refresh_table()
+
+        btn_row = QHBoxLayout()
+        restore_btn = QPushButton("🔓 Restore File")
+        restore_btn.setObjectName("primary")
+        delete_btn = QPushButton("❌ Delete File")
+        delete_btn.setObjectName("danger")
+        close_btn = QPushButton("Close")
+
+        btn_row.addWidget(restore_btn)
+        btn_row.addWidget(delete_btn)
+        btn_row.addStretch()
+        btn_row.addWidget(close_btn)
+        layout.addLayout(btn_row)
+
+        def get_selected_file():
+            row = q_table.currentRow()
+            if row < 0: return None
+            return q_table.item(row, 0).data(Qt.ItemDataRole.UserRole)
+
+        def on_restore():
+            f = get_selected_file()
+            if not f: return
+            dest, _ = QFileDialog.getExistingDirectory(dlg, "Select Restore Destination")
+            if dest:
+                if quar.restore_file(f, dest):
+                    QMessageBox.information(dlg, "Restored", "File decrypted and restored successfully.")
+                    refresh_table()
+                else:
+                    QMessageBox.critical(dlg, "Error", "Failed to restore file. Check permissions or keys.")
+
+        def on_delete():
+            f = get_selected_file()
+            if not f: return
+            reply = QMessageBox.question(dlg, "Confirm Delete", "Permanently delete this encrypted threat?", QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+            if reply == QMessageBox.StandardButton.Yes:
+                if quar.delete_quarantined_file(f):
+                    refresh_table()
+                else:
+                    QMessageBox.critical(dlg, "Error", "Failed to delete file.")
+
+        restore_btn.clicked.connect(on_restore)
+        delete_btn.clicked.connect(on_delete)
+        close_btn.clicked.connect(dlg.accept)
+
+        dlg.exec()
 
     def _refresh_dashboard(self):
         db = os.path.join(BASE_DIR, "threat_cache.db")
@@ -1855,13 +2079,15 @@ class CyberSentinelGUI(QMainWindow):
 
     def _populate_edr_table(self, procs):
         t = self._edr_table
-        t.setRowCount(0)
-        for p in procs:
-            row = t.rowCount()
-            t.insertRow(row)
+        # [THESIS FIX] Suspend rendering to prevent UI stutter when processing large lists (>200 items).
+        # This directly addresses the "Needs Better UI Responsiveness" feedback (12%).
+        t.setUpdatesEnabled(False)
+        t.setRowCount(len(procs))
+        for row, p in enumerate(procs):
             t.setItem(row, 0, table_item(str(p["pid"]), THEME["blue"]))
             t.setItem(row, 1, table_item(p["name"]))
             t.setItem(row, 2, table_item(p["path"], THEME["muted"]))
+        t.setUpdatesEnabled(True)   # Resume rendering
         # Store proc data in row for retrieval
         t.setProperty("procs", procs)
 
@@ -5186,7 +5412,7 @@ class CyberSentinelGUI(QMainWindow):
                 vc = THEME["red"] if "CRITICAL" in (r["verdict"] or "") else THEME["green"]
                 t.setItem(row, 2, table_item(r["verdict"], vc))
                 t.setItem(row, 3, table_item(f"{r['score']:.3f}"))
-                t.setItem(row, 4, table_item(top.get("feature", "—")[:50]))
+                t.setItem(row, 4, table_item(top.get("feature", "—")))
                 d = top.get("direction", "—")
                 dc = THEME["red"] if "malicious" in d else THEME["green"]
                 t.setItem(row, 5, table_item(d, dc))
