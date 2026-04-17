@@ -1,6 +1,7 @@
 # modules/analysis_manager.py
 
 import os
+import sys
 import datetime
 import json
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -343,7 +344,7 @@ class ScannerLogic:
                 for i, api in enumerate(api_list)
             ]
             strings_block = "\n".join(strings_lines)
-            return (
+            yara_rule = (
                 f"\n### 🎯 Resilient YARA Rule (Auto-Generated)\n"
                 f"rule Detect_{rule_name} {{\n"
                 f"    meta:\n"
@@ -356,6 +357,18 @@ class ScannerLogic:
                 f"        uint16(0) == 0x5A4D and any of ($api*)\n"
                 f"}}"
             )
+            
+            # [THESIS FIX] YARA Rule Validation Layer
+            # Ensures generated rules are syntactically valid to prevent hallucinated signatures from breaking downstream tools.
+            try:
+                import yara
+                compiled_rule = yara.compile(source=yara_rule)
+            except ImportError:
+                yara_rule += "\n// [!] yara-python not installed; rule syntax not verified."
+            except Exception as e:
+                yara_rule = f"// [!] YARA generation failed validation: {e}"
+                
+            return yara_rule
 
         # ── LLM prompt ────────────────────────────────────────────────────────
         # The model was trained on a fixed output format that includes KQL and
@@ -949,16 +962,10 @@ f"    Run: ollama create {self.llm_model} -f Modelfile"
                             )
                         # Run SHAP explainability on the cloud-confirmed malicious file
                         try:
-                            from .explainability import run_shap_explanation
-                            run_shap_explanation(
-                                self.ml_scanner.booster,
-                                ml_result_cloud["features"],
-                                ml_v,
-                                ml_sc,
-                                sha256,
-                                filename,
-                                self.log_event,
-                            )
+                            shap_expl = ml_result_cloud.get("shap_explanation")
+                            if shap_expl:
+                                for line in shap_expl["narrative"].splitlines():
+                                    self.log_event(line)
                         except Exception:
                             pass
                     else:
@@ -1001,29 +1008,11 @@ f"    Run: ollama create {self.llm_model} -f Modelfile"
         ml_verdict = ml_result["verdict"]
         score_pct = ml_result["score"]
 
-        if ml_verdict == "CRITICAL RISK":
-            self._handle_critical_ml_threat(file_path, sha256, file_size_mb, ml_result)
-        elif ml_verdict == "SUSPICIOUS":
-            colors.warning("[!] Anomalies detected but below isolation threshold. Sandbox testing advised.")
-            if self.webhook_url or self.webhook_high:
-                import socket as _sock, datetime as _dt
-                utils.route_webhook_alert(
-                    self._webhooks(),
-                    "HIGH",
-                    "⚠️ Suspicious File Detected",
-                    {
-                        "File":     os.path.basename(file_path) if file_path else "Unknown",
-                        "SHA256":   sha256,
-                        "Verdict":  "SUSPICIOUS",
-                        "Score":    f"{ml_result['score']:.2%}",
-                        "Severity": "HIGH",
-                        "Host":     _sock.gethostname(),
-                        "Time":     _dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                        "Action":   "Sandbox testing advised",
-                    },
-                )
-        else:
-            colors.success("[+] File structure aligns with safe parameters.")
+        # [THESIS FIX] Log custom YARA matches if any
+        yara_matches = ml_result.get("yara_matches")
+        if yara_matches:
+            self.log_event(f"[*] CUSTOM YARA MATCHES: {', '.join(yara_matches)}")
+            self.session_log.append(f"[*] YARA MATCHES: {', '.join(yara_matches)}")
 
         self.session_log.append(f"[*] TIER 2: {ml_verdict} ({score_pct:.2%})")
         ml_context = f"{filename} | Tier 2: Local ML ({score_pct:.2%})"
@@ -1055,16 +1044,8 @@ f"    Run: ollama create {self.llm_model} -f Modelfile"
 
         shap_expl = ml_result.get("shap_explanation")
         if shap_expl:
-            self.log_event("[*] SHAP Feature Attribution (top factors):")
-            for feat in shap_expl["top_features"][:5]:
-                arrow = "↑" if feat["shap_value"] > 0 else "↓"
-                self.log_event(
-                    f"    {arrow} {feat['feature'][:55]:<55} "
-                    f"({feat['shap_value']:+.4f})"
-                )
-            # Most influential feature group
-            top_group = next(iter(shap_expl["group_summary"]))
-            self.log_event(f"    Primary driver group: {top_group}")
+            for line in shap_expl["narrative"].splitlines():
+                self.log_event(line)
 
         drift = ml_result.get("drift_alert")
         if drift:
@@ -1091,6 +1072,23 @@ f"    Run: ollama create {self.llm_model} -f Modelfile"
             self._handle_critical_ml_threat(file_path, sha256, file_size_mb, ml_result)
         elif ml_verdict == "SUSPICIOUS":
             colors.warning("[!] Anomalies detected but below isolation threshold. Sandbox testing advised.")
+            if self.webhook_url or self.webhook_high:
+                import socket as _sock, datetime as _dt
+                utils.route_webhook_alert(
+                    self._webhooks(),
+                    "HIGH",
+                    "⚠️ Suspicious File Detected",
+                    {
+                        "File":     os.path.basename(file_path) if file_path else "Unknown",
+                        "SHA256":   sha256,
+                        "Verdict":  "SUSPICIOUS",
+                        "Score":    f"{ml_result['score']:.2%}",
+                        "Severity": "HIGH",
+                        "Host":     _sock.gethostname(),
+                        "Time":     _dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                        "Action":   "Sandbox testing advised",
+                    },
+                )
         else:
             colors.success("[+] File structure aligns with safe parameters.")
 
@@ -1440,7 +1438,7 @@ f"    Run: ollama create {self.llm_model} -f Modelfile"
                     fname_input.setPlaceholderText("e.g. my_scan_report")
                     fname_row.addWidget(fname_lbl)
                     fname_row.addWidget(fname_input)
-                    ext_lbl = QLabel(".txt")
+                    ext_lbl = QLabel(".html")
                     ext_lbl.setStyleSheet(f"color: {_MUTED}; font-size: 11px; border: none;")
                     fname_row.addWidget(ext_lbl)
                     layout.addLayout(fname_row)
@@ -1471,27 +1469,37 @@ f"    Run: ollama create {self.llm_model} -f Modelfile"
                         # Sanitize — remove path separators and dangerous chars
                         import re
                         safe = re.sub(r'[\\/:*?"<>|]', '_', raw)
-                        if not safe.endswith(".txt"):
-                            safe += ".txt"
+                        if not safe.endswith(".html"):
+                            safe += ".html"
                         filepath = os.path.join(analysis_dir, safe)
                         # Avoid overwrite silently — append timestamp if exists
                         if os.path.exists(filepath):
                             import datetime as _dt2
                             ts = _dt2.datetime.now().strftime("_%H%M%S")
-                            safe = safe.replace(".txt", f"{ts}.txt")
+                            safe = safe.replace(".html", f"{ts}.html")
                             filepath = os.path.join(analysis_dir, safe)
                         try:
+                            # [THESIS FIX] HTML Export for Analyst Reports
                             with open(filepath, "w", encoding="utf-8") as f:
-                                f.write("=" * 60 + "\n")
-                                f.write(" CYBERSENTINEL v1 — SCAN SESSION REPORT\n")
-                                f.write(
-                                    f" Generated : {_dt.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
-                                )
-                                f.write("=" * 60 + "\n\n")
-                                f.write("\n".join(self.session_log))
-                                f.write("\n\n" + "=" * 60 + "\n")
-                                f.write(" END OF REPORT\n")
-                                f.write("=" * 60 + "\n")
+                                html = f"""<!DOCTYPE html>
+<html>
+<head>
+<title>CyberSentinel Scan Report</title>
+<style>
+body {{ background: #0d1117; color: #c9d1d9; font-family: Consolas, monospace; padding: 20px; }}
+h2 {{ color: #58a6ff; border-bottom: 1px solid #30363d; padding-bottom: 10px; }}
+.log {{ background: #161b22; padding: 15px; border: 1px solid #30363d; border-radius: 5px; white-space: pre-wrap; }}
+</style>
+</head>
+<body>
+<h2>🛡️ CyberSentinel Scan Report</h2>
+<p><b>Generated:</b> {_dt.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
+<div class="log">
+{chr(10).join(self.session_log)}
+</div>
+</body>
+</html>"""
+                                f.write(html)
                             self.log_event(
                                 f"[+] Session report saved: Analysis Files\\{safe}"
                             )
