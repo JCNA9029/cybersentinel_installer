@@ -81,3 +81,53 @@ def quarantine_file(file_path: str, quarantine_dir: str = None) -> bool:
     except Exception as e:
         print(f"\n[-] ACTION FAILED: {e}\n")
         return False
+
+# [THESIS FIX] GUI Quarantine Manager functions
+
+def list_quarantined_files(quarantine_dir: str = None) -> list:
+    """Returns a list of quarantined file paths."""
+    if quarantine_dir is None:
+        quarantine_dir = QUARANTINE_DIR
+    if not os.path.exists(quarantine_dir):
+        return []
+    return [os.path.join(quarantine_dir, f) for f in os.listdir(quarantine_dir) if f.endswith(".quarantine")]
+
+def restore_file(quarantined_path: str, dest_dir: str) -> bool:
+    """Decrypts a quarantined file and restores it to dest_dir."""
+    if not os.path.exists(quarantined_path):
+        return False
+    try:
+        with open(quarantined_path, "rb") as f:
+            data = f.read()
+        try:
+            from . import utils
+            cipher = utils._get_fernet()
+            decrypted = cipher.decrypt(data) if cipher else data
+        except Exception:
+            decrypted = data # Fallback
+            
+        original_name = os.path.basename(quarantined_path).replace(".quarantine", "")
+        # Remove timestamp if it was appended (e.g. file.exe_20231012_153000)
+        import re
+        original_name = re.sub(r'_\d{8}_\d{6}$', '', original_name)
+        
+        dest_path = os.path.join(dest_dir, original_name)
+        with open(dest_path, "wb") as f:
+            f.write(decrypted)
+        
+        os.remove(quarantined_path)
+        return True
+    except Exception as e:
+        print(f"[-] Restore failed: {e}")
+        return False
+
+def delete_quarantined_file(quarantined_path: str) -> bool:
+    """Permanently deletes a quarantined file."""
+    if not os.path.exists(quarantined_path):
+        return False
+    try:
+        os.remove(quarantined_path)
+        return True
+    except Exception as e:
+        print(f"[-] Delete failed: {e}")
+        return False
