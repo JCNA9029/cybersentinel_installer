@@ -119,17 +119,22 @@ class LocalScanner:
         except OSError:
             return None
 
+        import mmap
         file_data = None
         try:
             with open(file_path, "rb") as f:
-                file_data = f.read()
+                # [THESIS FIX] Use mmap instead of f.read() to reduce memory spikes on large files (>50MB)
+                # This directly addresses the performance bottlenecks noted by 12% of respondents.
+                file_data = mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ)
 
-            if not file_data.startswith(b"MZ"):
+            if not file_data[:2] == b"MZ":
                 print("[-] REJECTED: Not a valid Windows PE (bad magic bytes).")
+                file_data.close()
                 return None
 
             extractor = thrember.PEFeatureExtractor()
             features = np.array(extractor.feature_vector(file_data), dtype=np.float32)
+            file_data.close()
             return features.reshape(1, -1)
 
         except PermissionError:
@@ -188,6 +193,39 @@ class LocalScanner:
 
         return list(set(suspicious_calls))
 
+    # ── CUSTOM YARA SCANNING
+
+    def _scan_yara(self, file_path: str) -> list[str]:
+        """
+        [THESIS FIX] Custom YARA Rule Scanning
+        Scans the file against any .yar rules placed in the custom_rules/ folder.
+        """
+        try:
+            import yara
+            rules_dir = _INSTALL_DIR / "custom_rules"
+            if not rules_dir.exists():
+                rules_dir.mkdir(exist_ok=True)
+                # Create a sample rule file if the folder is empty
+                sample_rule = 'rule DummyRule { condition: false }'
+                (rules_dir / "sample.yar").write_text(sample_rule)
+            
+            rule_files = {}
+            for f in rules_dir.glob("*.yar"):
+                rule_files[f.stem] = str(f)
+            
+            if not rule_files:
+                return []
+            
+            compiled_rules = yara.compile(filepaths=rule_files)
+            matches = compiled_rules.match(file_path)
+            return [m.rule for m in matches]
+        except ImportError:
+            # yara-python not installed
+            return []
+        except Exception as e:
+            print(f"[-] YARA scanning error: {e}")
+            return []
+
     # ── INFERENCE STAGES
 
     def scan_stage1(self, file_path: str) -> dict | None:
@@ -228,6 +266,7 @@ class LocalScanner:
                 verdict, is_malicious = "SAFE", False
 
             apis = self.get_suspicious_apis(file_path)
+            yara_matches = self._scan_yara(file_path)
 
             result = {
                 "verdict":        verdict,
@@ -235,6 +274,7 @@ class LocalScanner:
                 "is_malicious":   is_malicious,
                 "features":       features,
                 "detected_apis":  apis,
+                "yara_matches":   yara_matches,
                 "shap_explanation": None,
                 "drift_alert":    None,
             }
@@ -253,8 +293,6 @@ class LocalScanner:
                     top_n    = 10,
                 )
                 result["shap_explanation"] = expl
-                if expl:
-                    print(f"[*] SHAP: {expl['narrative'].splitlines()[0]}")
             except Exception as e:
                 print(f"[-] SHAP: Non-critical explainability error: {e}")
 
