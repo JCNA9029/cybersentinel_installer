@@ -190,6 +190,11 @@ Root: HKLM; Subkey: "SOFTWARE\{#MyAppName}"; ValueType: string; ValueName: "Vers
 Root: HKLM; Subkey: "SOFTWARE\{#MyAppName}"; ValueType: none; ValueName: "PythonExe";  Flags: uninsdeletevalue
 Root: HKLM; Subkey: "SOFTWARE\{#MyAppName}"; ValueType: none; ValueName: "PythonwExe"; Flags: uninsdeletevalue
 
+; ── Explorer Context Menu (Right-Click "Scan with CyberSentinel") ──
+Root: HKCR; Subkey: "*\shell\CyberSentinel"; ValueType: string; ValueData: "Scan with CyberSentinel"; Flags: uninsdeletekey
+Root: HKCR; Subkey: "*\shell\CyberSentinel"; ValueType: string; ValueName: "Icon"; ValueData: "{app}\assets\icon.ico"
+Root: HKCR; Subkey: "*\shell\CyberSentinel\command"; ValueType: string; ValueData: """{reg:HKLM\SOFTWARE\{#MyAppName},PythonExe|python.exe}"" ""{app}\CyberSentinel.py"" ""%1"""
+
 
 [Code]
 // ============================================================
