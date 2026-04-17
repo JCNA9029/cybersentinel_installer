@@ -343,6 +343,45 @@ def sanitize_path(path: str) -> str:
         return ""
     return path.strip().lstrip("& ").strip("'\"").strip()
 
+def terminate_process(pid: int, process_name: str = "") -> bool:
+    """
+    [ACTIVE RESPONSE]
+    Ruthlessly terminates a malicious process and all of its children.
+    This provides user-mode reactive blocking for the daemon.
+    """
+    if not pid or pid <= 0:
+        return False
+    try:
+        import psutil
+        parent = psutil.Process(pid)
+        # Kill all children first to prevent orphans/persistence
+        for child in parent.children(recursive=True):
+            try:
+                child.kill()
+            except Exception:
+                pass
+        # Kill the parent
+        parent.kill()
+        
+        # Log the active response
+        now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        try:
+            with sqlite3.connect(DB_FILE) as conn:
+                conn.execute(
+                    "INSERT INTO event_timeline (event_type, detail, pid, timestamp) VALUES (?,?,?,?)",
+                    ("ACTIVE_RESPONSE_KILL", f"Terminated {process_name} and its children", pid, now)
+                )
+        except Exception:
+            pass
+            
+        print(f"\n[!] 🛑 ACTIVE RESPONSE: Terminated malicious process {process_name} (PID: {pid})")
+        return True
+    except psutil.NoSuchProcess:
+        return True # Process already died
+    except Exception as e:
+        print(f"\n[-] ⚠ ACTIVE RESPONSE FAILED: Could not terminate {process_name} (PID: {pid}) - {e}")
+        return False
+
 # ── SECTION 5: SQLITE DATABASE MANAGEMENT
 
 def init_db():
@@ -609,7 +648,7 @@ def get_all_cached_results() -> list:
     except sqlite3.Error:
         return []
 
-def is_excluded(file_path: str) -> bool:
+def is_excluded(file_path: str, cmdline: str = "") -> bool:
     """
     Checks whether the target path matches any administrator-defined allowlist entry.
     Auto-creates an exclusions.txt template on first run.
@@ -634,7 +673,10 @@ def is_excluded(file_path: str) -> bool:
                 if line.strip() and not line.startswith("#")
             ]
         target_path = file_path.lower()
-        return any(exc in target_path for exc in exclusions)
+        target_cmd = cmdline.lower() if cmdline else ""
+        # [THESIS FIX] Check if the exclusion string matches either the path or the command line.
+        # This addresses the "Limited Customization Options" feedback (24%) by allowing per-rule command line suppressions.
+        return any(exc in target_path or (target_cmd and exc in target_cmd) for exc in exclusions)
     except Exception:
         return False
 
