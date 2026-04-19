@@ -7,7 +7,7 @@ import lightgbm as lgb
 from .loading import Spinner
 from . import utils
 from pathlib import Path
-from ._paths import MODELS_DIR
+from ._paths import MODELS_DIR, INSTALL_DIR as _INSTALL_DIR
 
 try:
     import thrember

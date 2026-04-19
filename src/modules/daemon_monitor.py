@@ -1,6 +1,7 @@
 # modules/daemon_monitor.py — Headless Daemon: WMI hook + watchdog + all detectors
 
 import os
+import sys
 import time
 import threading
 from collections import deque
@@ -14,9 +15,10 @@ from .c2_fingerprint   import FeodoMonitor, DgaMonitor, Ja3Monitor
 from .chain_correlator import ChainCorrelator, ATTACK_CHAINS
 from .baseline_engine  import BaselineEngine
 from .amsi_monitor     import AmsiMonitor
-from .amsi_hook        import AmsiScanner, FilelessMonitor
+from .amsi_hook        import AmsiScanner, FilelessMonitor, _JIT_PROCESS_NAMES
 from .lolbin_detector  import LolbinDetector
 from . import colors, utils
+from .network_isolation import isolate_network as _isolate_network
 
 WATCHED_EXTENSIONS = (
     ".exe", ".dll", ".sys", ".apk", ".elf",
@@ -30,6 +32,17 @@ _SCRIPT_HOSTS = frozenset({
     "powershell.exe", "pwsh.exe",
     "wscript.exe", "cscript.exe",
     "mshta.exe",
+})
+
+# Parents that legitimately spawn encoded PowerShell (Windows Update, Task
+# Scheduler, WMI providers, etc.).  Script-host processes whose direct parent
+# is in this set are skipped by the fileless scanner to eliminate the most
+# common source of false-positive FILELESS ALERTs when running as admin.
+_TRUSTED_SYSTEM_PARENTS = frozenset({
+    "services.exe", "svchost.exe", "wininit.exe", "winlogon.exe",
+    "trustedinstaller.exe", "taskeng.exe", "taskhost.exe", "taskhostw.exe",
+    "wmiprvse.exe", "tiworker.exe", "msiexec.exe", "searchindexer.exe",
+    "sppsvc.exe", "wuauclt.exe", "usoclient.exe",
 })
 
 class ThreatHandler(FileSystemEventHandler):
@@ -60,7 +73,7 @@ _ETW_SEEN_MAX = 50_000
 
 class _BoundedSeen:
     """O(1) membership test with a fixed memory ceiling."""
-    __slots__ = ("_dq", "_s")
+    __slots__ = ("_dq", "_s", "_max")
 
     def __init__(self, maxlen: int):
         self._dq: deque[int] = deque()
@@ -76,7 +89,14 @@ class _BoundedSeen:
             self._s.discard(self._dq.popleft())
         return False
 
-def _monitor_processes_etw(lolbas: LolbasDetector, lolbin, fileless: FilelessMonitor):
+def _parse_hex_pid(s: str) -> int:
+    """Parse a hex PID string like '0x1A3C' from Event 4688 StringInserts[4]."""
+    try:
+        return int(s, 16) if s and s.startswith("0x") else int(s or "0")
+    except (ValueError, TypeError):
+        return 0
+
+def _monitor_processes_etw(lolbas: LolbasDetector, lolbin, fileless: FilelessMonitor, self_pid: int = 0, self_exe: str = ""):
     """
     Reads Windows Security Event Log for Event ID 4688 (Process Creation).
 
@@ -131,19 +151,35 @@ def _monitor_processes_etw(lolbas: LolbasDetector, lolbin, fileless: FilelessMon
                     continue
 
                 inserts     = evt.StringInserts or []
+                pid         = _parse_hex_pid(inserts[4]  if len(inserts) > 4  else "")
                 exe_path    = inserts[5]  if len(inserts) > 5  else ""
                 cmdline     = inserts[8]  if len(inserts) > 8  else ""
                 parent_path = inserts[13] if len(inserts) > 13 else ""
+                # inserts[7] is the Creator (parent) Process ID in hex.
+                # Use it as fallback when inserts[13] (ParentProcessName) is
+                # absent — common on older Windows builds and domain policies
+                # that do not populate the extended 4688 fields. Without this,
+                # parent_name stays "" which silently bypasses _TRUSTED_SYSTEM_PARENTS.
+                parent_pid  = _parse_hex_pid(inserts[7] if len(inserts) > 7 else "")
 
                 name        = os.path.basename(exe_path).lower() if exe_path else ""
                 parent_name = os.path.basename(parent_path).lower() if parent_path else ""
 
-                print(
-                    f"[ETW-DEBUG] 4688: name={name!r} "
-                    f"inserts_len={len(inserts)} cmdline={cmdline!r}"
-                )
+                # Fallback: resolve parent name from PID when inserts[13] is empty.
+                if not parent_name and parent_pid:
+                    try:
+                        import psutil as _ps
+                        parent_name = _ps.Process(parent_pid).name().lower()
+                    except Exception:
+                        parent_name = ""
 
                 if not name:
+                    continue
+
+                # Skip the daemon's own process creation event.
+                if pid == self_pid:
+                    continue
+                if self_exe and exe_path and exe_path.lower() == self_exe:
                     continue
 
                 # ── LoLBin checks ─────────────────────────────────────────────
@@ -156,20 +192,21 @@ def _monitor_processes_etw(lolbas: LolbasDetector, lolbin, fileless: FilelessMon
                 if hit:
                     colors.critical(lolbas.format_alert(hit))
 
-                lolbin_hit = lolbin.check(name, cmdline)
+                lolbin_hit = lolbin.check(name, cmdline, parent_name=parent_name)
                 if lolbin_hit:
                     lolbin.print_alert(lolbin_hit)
 
-                # ── AMSI / fileless script scanning ───────────────────────────
                 # Route script host cmdlines through AMSI heuristics.
                 # This mirrors the WMI path and was missing from the ETW path,
                 # meaning mshta/wscript content was never AMSI-scanned from 4688.
+                # Guard against trusted system parents — same logic as WMI path.
                 if name in _SCRIPT_HOSTS and cmdline:
-                    fileless.scan_script(
-                        cmdline,
-                        source_name=f"ETW:{name}",
-                        pid=0,
-                    )
+                    if parent_name.lower() not in _TRUSTED_SYSTEM_PARENTS:
+                        fileless.scan_script(
+                            cmdline,
+                            source_name=f"ETW:{name}",
+                            pid=pid,
+                        )
 
         except Exception as _etw_err:
             print(f"[ETW] loop error: {_etw_err}")
@@ -178,7 +215,7 @@ def _monitor_processes_etw(lolbas: LolbasDetector, lolbin, fileless: FilelessMon
 
 # ── WMI process creation monitor
 
-def _monitor_processes(logic, lolbas, byovd, baseline, dga, lolbin, fileless):
+def _monitor_processes(logic, lolbas, byovd, baseline, dga, lolbin, fileless, self_pid=0, self_exe=""):
     try:
         import wmi, pythoncom
         pythoncom.CoInitialize()
@@ -190,6 +227,14 @@ def _monitor_processes(logic, lolbas, byovd, baseline, dga, lolbin, fileless):
             exe_path = proc.ExecutablePath or ""
             name     = proc.Name          or ""
             pid      = proc.ProcessId     or 0
+
+            # Skip the daemon's own process — WMI fires for every new process
+            # including the one that just launched us, which causes CyberSentinel
+            # to scan and potentially flag itself on startup.
+            if pid == self_pid:
+                continue
+            if self_exe and exe_path and exe_path.lower() == self_exe:
+                continue
 
             # ── CommandLine: read immediately then retry if empty ──────────────
             # WMI returns None for short-lived processes because the OS recycles
@@ -242,7 +287,7 @@ def _monitor_processes(logic, lolbas, byovd, baseline, dga, lolbin, fileless):
                 if hit.get("confidence") == "HIGH" and pid:
                     utils.terminate_process(pid, name)
 
-            lolbin_hit = lolbin.check(name, cmdline, pid=pid)
+            lolbin_hit = lolbin.check(name, cmdline, pid=pid, parent_name=parent_name)
             if lolbin_hit:
                 lolbin.print_alert(lolbin_hit)
                 # [THESIS FIX] User-Mode Active Blocking
@@ -267,19 +312,32 @@ def _monitor_processes(logic, lolbas, byovd, baseline, dga, lolbin, fileless):
             # ── AMSI / fileless script scanning ───────────────────────────────
             # mshta is now included — it executes VBScript/JavaScript inline,
             # the same threat surface as PowerShell and WScript.
+            # Skip script hosts spawned by trusted Windows system parents —
+            # svchost, services, TrustedInstaller etc. legitimately use
+            # -EncodedCommand for scheduled tasks and update pipelines.
             if name.lower() in _SCRIPT_HOSTS and cmdline:
-                fileless.scan_script(
-                    cmdline,
-                    source_name=f"{name}[PID:{pid}]",
-                    pid=pid,
-                )
+                if parent_name.lower() not in _TRUSTED_SYSTEM_PARENTS:
+                    fileless.scan_script(
+                        cmdline,
+                        source_name=f"{name}[PID:{pid}]",
+                        pid=pid,
+                    )
 
             # ── Standard PE scan (non-Windows binaries only) ─────────────────
             if exe_path and "c:\\windows" not in exe_path.lower():
-                try:
-                    logic.scan_file(exe_path)
-                except Exception as e:
-                    print(f"[DAEMON] ⚠  Scanner skipped {name}: {e}")
+                # Skip known JIT hosts (browsers, Electron apps, runtimes).
+                # These are already in _JIT_PROCESS_NAMES for memory-scan
+                # suppression — reuse the same set to avoid redundant PE scans.
+                if name.lower() not in _JIT_PROCESS_NAMES:
+                    # Pre-check exclusions before invoking scan_file so that
+                    # allowlisted processes produce zero console output in daemon mode.
+                    if not utils.is_excluded(exe_path):
+                        _sha = utils.get_sha256(exe_path) or ""
+                        if not utils.is_excluded(exe_path, file_hash=_sha):
+                            try:
+                                logic.scan_file(exe_path)
+                            except Exception as e:
+                                print(f"[DAEMON] ⚠  Scanner skipped {name}: {e}")
 
     except ImportError:
         print("[DAEMON] ⚠  WMI unavailable — install wmi + pywin32.")
@@ -293,6 +351,50 @@ def _run_correlator(correlator):
             correlator.run_correlation()
         except Exception:
             pass
+
+def _monitor_dns(dga: DgaMonitor):
+    """
+    Sniffs UDP port 53 via scapy and feeds every outbound DNS query name into
+    DgaMonitor.analyse(). This is the missing link that connects live DNS
+    activity to the DGA entropy detector.
+
+    Requires scapy + Npcap. Silently exits if either is unavailable.
+    MITRE: T1568.002 (Dynamic Resolution: Domain Generation Algorithms)
+    """
+    try:
+        from scapy.all import sniff, DNS, DNSQR, IP, conf
+        conf.use_pcap = True  # Force Npcap backend — required on Windows
+    except Exception as e:
+        print(f"[!] DGA DNS monitor disabled — scapy/Npcap unavailable: {e}")
+        return
+
+    def cb(pkt):
+        if not dga._running:
+            return
+        # Only process outbound DNS queries (QR bit == 0), not responses
+        if not (pkt.haslayer(DNS) and pkt[DNS].qr == 0 and pkt.haslayer(DNSQR)):
+            return
+        try:
+            raw = pkt[DNSQR].qname
+            qname = raw.decode("utf-8", errors="ignore").rstrip(".")
+            if not qname:
+                return
+            result = dga.analyse(qname)
+            if result:
+                print(dga.format_alert(result))
+        except Exception:
+            pass
+
+    try:
+        print("[*] 🔁  DGA DNS sniffer active (UDP/53 via Npcap)")
+        sniff(
+            filter="udp port 53",
+            prn=cb,
+            store=False,
+            stop_filter=lambda _: not dga._running,
+        )
+    except Exception as e:
+        print(f"[-] DGA DNS monitor error: {e}")
 
 # ── Entry point
 
@@ -308,7 +410,7 @@ def start_daemon(target_dir: str, webhook_url: str = "", webhooks: dict | None =
 
     lolbas     = LolbasDetector(webhook_url=webhook_url)
     byovd      = ByovdDetector()
-    feodo      = FeodoMonitor()
+    feodo      = FeodoMonitor(auto_isolate_cb=_isolate_network)
     dga        = DgaMonitor()
     ja3        = Ja3Monitor()
     correlator = ChainCorrelator(webhook_url=webhook_url, webhooks=webhooks or {})
@@ -330,6 +432,7 @@ def start_daemon(target_dir: str, webhook_url: str = "", webhooks: dict | None =
 
     feodo.start()
     ja3.start()
+    dga.start()  # Mark DGA monitor active before DNS sniff thread begins
     amsi.start()
     # Lowered from 120s. 30s gives meaningful coverage while not hammering
     # the scheduler. The first scan now runs immediately (no initial sleep).
@@ -338,18 +441,25 @@ def start_daemon(target_dir: str, webhook_url: str = "", webhooks: dict | None =
     if not baseline.is_learning():
         baseline.start_detection()
 
+    # Capture daemon's own identity so both monitor threads can skip self-detection.
+    _self_pid = os.getpid()
+    _self_exe = os.path.abspath(sys.executable).lower()
+
     threading.Thread(
         target=_monitor_processes,
-        args=(logic, lolbas, byovd, baseline, dga, lolbin, fileless),
+        args=(logic, lolbas, byovd, baseline, dga, lolbin, fileless, _self_pid, _self_exe),
         daemon=True,
     ).start()
     # fileless is now passed to the ETW thread so it can AMSI-scan script hosts
     threading.Thread(
         target=_monitor_processes_etw,
-        args=(lolbas, lolbin, fileless),
+        args=(lolbas, lolbin, fileless, _self_pid, _self_exe),
         daemon=True,
     ).start()
     threading.Thread(target=_run_correlator, args=(correlator,), daemon=True).start()
+    # Fix: DNS sniffer thread feeds DgaMonitor.analyse() — previously DGA was
+    # instantiated but never connected to any live data source.
+    threading.Thread(target=_monitor_dns, args=(dga,), daemon=True).start()
 
     handler  = ThreatHandler(logic)
     observer = Observer()
@@ -364,6 +474,7 @@ def start_daemon(target_dir: str, webhook_url: str = "", webhooks: dict | None =
         fileless.stop()
         feodo.stop()
         ja3.stop()
+        dga.stop()  # signals _monitor_dns thread to exit
         amsi.stop()
         print("\n[*] Daemon shutdown complete.")
     observer.join()

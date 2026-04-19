@@ -11,6 +11,18 @@ from . import utils
 
 from .intel_updater import load_lolbas
 
+# Dev tool parents that legitimately spawn LoLBins (e.g. node.exe → powershell -enc).
+# Imported from lolbas_detector to keep the definition in one place.
+# Falls back to a local copy if the import fails (e.g. circular import edge-case).
+try:
+    from .lolbas_detector import DEV_TOOL_PARENTS as _DEV_TOOL_PARENTS
+except ImportError:
+    _DEV_TOOL_PARENTS: frozenset[str] = frozenset({
+        "node.exe", "code.exe", "electron.exe",
+        "npm.cmd", "npm", "yarn.cmd", "yarn",
+        "python.exe", "python3.exe", "git.exe", "java.exe",
+    })
+
 @dataclass
 class LolbinAlert:
     binary:       str
@@ -65,7 +77,8 @@ class LolbinDetector:
         except Exception as e:
             print(f"[!] LolbinDetector: failed to load intel feed — {e}")
 
-    def check(self, process_name: str, command_line: str, pid: int = 0) -> LolbinAlert | None:
+    def check(self, process_name: str, command_line: str, pid: int = 0,
+              parent_name: str = "") -> LolbinAlert | None:
         if not process_name:
             return None
 
@@ -75,6 +88,12 @@ class LolbinDetector:
 
         entry = self._patterns.get(raw)
         if not entry:
+            return None
+
+        # Suppress lolbin_detector alerts when a known dev tool is the parent.
+        # lolbas_detector will still fire at MEDIUM confidence with full context,
+        # so the analyst is informed — we just avoid the duplicate lower-quality alert.
+        if parent_name and parent_name.lower() in _DEV_TOOL_PARENTS:
             return None
 
         # WMI Win32_Process.CommandLine is often None for short-lived processes

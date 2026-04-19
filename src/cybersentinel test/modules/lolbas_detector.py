@@ -281,6 +281,11 @@ class LolbasDetector:
 
         Returns a finding dict with confidence score, or None if clean.
         """
+        # [THESIS FIX] Allow specific command lines to be suppressed via exclusions.txt
+        # This reduces noise without blinding the EDR to all executions of a given LOLBin.
+        if utils.is_excluded(exe_path, cmdline):
+            return None
+
         # Layer 1: Normalize the command line to strip obfuscation
         cmdline_normalized = _normalize_cmdline(cmdline)
         cmd_lower          = cmdline_normalized.lower()

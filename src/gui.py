@@ -626,20 +626,20 @@ class CyberSentinelGUI(QMainWindow):
             self.feodo        = FeodoMonitor(webhook_url=_wh, webhooks=_whs)
             self.dga          = DgaMonitor(webhook_url=_wh,  webhooks=_whs)
             self.ja3          = Ja3Monitor(webhook_url=_wh,  webhooks=_whs)
-            # Start C2 background monitors
+            
+            # Start lightweight network monitors (Feodo IP check + JA3 TLS sniffer +
+            # DGA DNS sniffer) only when the GUI is used standalone — i.e. without the
+            # --daemon process running. Heavy WMI/behavioral monitors stay off in GUI
+            # mode to avoid DB lock conflicts and CPU overhead.
+            import threading
+            from modules.daemon_monitor import _monitor_dns
             self.feodo.start()
             self.ja3.start()
-            # Start WMI process monitor (LOLBin + BYOVD + Baseline)
-            self.amsi.start()
-            self.byovd.start_realtime_monitor()
-            import threading
-            from modules.daemon_monitor import _monitor_processes
+            self.dga.start()
             threading.Thread(
-                target=_monitor_processes,
-                args=(self.logic, self.lolbas, self.byovd,
-                      self.baseline, self.dga, self.lolbin, self.fileless),
-                daemon=True
+                target=_monitor_dns, args=(self.dga,), daemon=True
             ).start()
+            
             # ──────────────────────────────────────────────────────────
             self.update_all   = update_all
             self.feed_status  = feed_status
@@ -1399,7 +1399,7 @@ class CyberSentinelGUI(QMainWindow):
         def on_restore():
             f = get_selected_file()
             if not f: return
-            dest, _ = QFileDialog.getExistingDirectory(dlg, "Select Restore Destination")
+            dest = QFileDialog.getExistingDirectory(dlg, "Select Restore Destination")
             if dest:
                 if quar.restore_file(f, dest):
                     QMessageBox.information(dlg, "Restored", "File decrypted and restored successfully.")
@@ -1848,7 +1848,7 @@ class CyberSentinelGUI(QMainWindow):
             for line in report.splitlines():
                 console.append_line(line)
 
-            dlg.show()
+            dlg.exec()
 
         # Always run on the Qt main thread regardless of which thread called us
         self._run_on_main_signal.emit(_do)
@@ -3118,7 +3118,7 @@ class CyberSentinelGUI(QMainWindow):
             "    Click Start to resume scanning."
         )
 
-    # ── PAGE: NETWORK ─────────────────────────────────────────────────────────
+    # ── PAGE: NETWORK ────────────────────────────────────────────────────────
 
     def _build_network_page(self):
         page = QWidget()
@@ -3126,15 +3126,16 @@ class CyberSentinelGUI(QMainWindow):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
         layout.addWidget(self._page_header(
-            "🌐", "Network Containment",
-            "Emergency host isolation — adds Windows Firewall block rules"
+            "🌐", "Network / C2 Monitor",
+            "Live C2 detection — Feodo IPs, DGA beacons, JA3 TLS fingerprints — plus emergency host isolation"
         ))
 
         inner = QWidget()
         inner_layout = QVBoxLayout(inner)
         inner_layout.setContentsMargins(24, 20, 24, 20)
-        inner_layout.setSpacing(16)
+        inner_layout.setSpacing(14)
 
+        # ── containment controls (always at top) ──────────────────────────────
         warn = QLabel("⚠️  WARNING: Isolating the network will cut all internet connectivity until restored.")
         warn.setStyleSheet(f"""
             color: {THEME['red']};
@@ -3167,12 +3168,191 @@ class CyberSentinelGUI(QMainWindow):
         btn_layout.addStretch()
         inner_layout.addWidget(btn_grp)
 
+        # ── C2 alert tabs ─────────────────────────────────────────────────────
+        alert_grp = QGroupBox("Live C2 Alerts")
+        alert_grp_layout = QVBoxLayout(alert_grp)
+        alert_grp_layout.setContentsMargins(8, 8, 8, 8)
+        alert_grp_layout.setSpacing(6)
+
+        # Badge row — shows live counts per category
+        badge_row = QHBoxLayout()
+        badge_row.setSpacing(16)
+        self._net_badge_feodo = QLabel("Feodo IPs: 0")
+        self._net_badge_dga   = QLabel("DGA Beacons: 0")
+        self._net_badge_ja3   = QLabel("JA3 Matches: 0")
+        for badge in (self._net_badge_feodo, self._net_badge_dga, self._net_badge_ja3):
+            badge.setStyleSheet(f"color: {THEME['muted']}; font-size: 11px;")
+        badge_row.addWidget(self._net_badge_feodo)
+        badge_row.addWidget(self._net_badge_dga)
+        badge_row.addWidget(self._net_badge_ja3)
+        badge_row.addStretch()
+        clr_btn = QPushButton("Clear Seen")
+        clr_btn.setMaximumWidth(90)
+        clr_btn.setMaximumHeight(24)
+        clr_btn.setStyleSheet(f"color: {THEME['muted']}; font-size: 10px;")
+        clr_btn.clicked.connect(self._net_clear_seen)
+        badge_row.addWidget(clr_btn)
+        alert_grp_layout.addLayout(badge_row)
+
+        c2_tabs = QTabWidget()
+        c2_tabs.setDocumentMode(True)
+
+        # Tab 1 — Feodo C2 IPs
+        feodo_widget = QWidget()
+        feodo_layout = QVBoxLayout(feodo_widget)
+        feodo_layout.setContentsMargins(4, 6, 4, 4)
+        self._net_feodo_table = make_table(
+            ["Timestamp", "Remote IP", "Port", "Process", "PID", "Malware Family"],
+            stretch_col=3,
+        )
+        feodo_layout.addWidget(self._net_feodo_table)
+        c2_tabs.addTab(feodo_widget, "🔴  Feodo C2 IPs")
+
+        # Tab 2 — DGA Beacons
+        dga_widget = QWidget()
+        dga_layout = QVBoxLayout(dga_widget)
+        dga_layout.setContentsMargins(4, 6, 4, 4)
+        self._net_dga_table = make_table(
+            ["Timestamp", "Trigger Domain", "Entropy", "Burst", "Sample Domains"],
+            stretch_col=4,
+        )
+        dga_layout.addWidget(self._net_dga_table)
+        c2_tabs.addTab(dga_widget, "🔁  DGA Beacons")
+
+        # Tab 3 — JA3 TLS Fingerprints
+        ja3_widget = QWidget()
+        ja3_layout = QVBoxLayout(ja3_widget)
+        ja3_layout.setContentsMargins(4, 6, 4, 4)
+        self._net_ja3_table = make_table(
+            ["Timestamp", "JA3 Hash", "Src IP", "Dst IP"],
+            stretch_col=1,
+        )
+        ja3_layout.addWidget(self._net_ja3_table)
+        c2_tabs.addTab(ja3_widget, "🔐  JA3 TLS")
+
+        alert_grp_layout.addWidget(c2_tabs, 1)
+        inner_layout.addWidget(alert_grp, 1)
+
+        # ── containment action log (slim, at the bottom) ──────────────────────
         self._net_console = ConsoleWidget()
-        self._net_console.append_line("● Network containment ready.", THEME["muted"])
-        inner_layout.addWidget(self._net_console, 1)
+        self._net_console.setMaximumHeight(80)
+        self._net_console.append_line("● Network monitor ready.", THEME["muted"])
+        inner_layout.addWidget(self._net_console)
 
         layout.addWidget(inner, 1)
+
+        # Auto-refresh every 5 s
+        self._net_last_feodo = -1
+        self._net_last_dga   = -1
+        self._net_last_ja3   = -1
+        self._net_timer = QTimer(self)
+        self._net_timer.timeout.connect(self._refresh_c2_alerts)
+        self._net_timer.start(5_000)
+        QTimer.singleShot(300, self._refresh_c2_alerts)
+
         return page
+
+    def _refresh_c2_alerts(self):
+        """Polls c2_alerts table and updates all three network alert tables."""
+        # ── Feodo ──
+        feodo_rows = _db_query(
+            "SELECT timestamp, indicator, details, malware_family FROM c2_alerts "
+            "WHERE detection_type='C2_IP' ORDER BY timestamp DESC LIMIT 100"
+        )
+        feodo_count = len(feodo_rows)
+        t = self._net_feodo_table
+        t.setRowCount(0)
+        if not feodo_rows:
+            r = t.rowCount(); t.insertRow(r)
+            t.setItem(r, 0, table_item("No Feodo C2 connections detected yet.", THEME["muted"]))
+            for i in range(1, 6): t.setItem(r, i, table_item(""))
+        else:
+            for row in feodo_rows:
+                import json as _json
+                d = {}
+                try: d = _json.loads(row.get("details") or "{}")
+                except Exception: pass
+                r = t.rowCount(); t.insertRow(r)
+                t.setItem(r, 0, table_item(row.get("timestamp", ""), THEME["muted"]))
+                t.setItem(r, 1, table_item(row.get("indicator", "—"), THEME["red"]))
+                t.setItem(r, 2, table_item(str(d.get("remote_port", "—"))))
+                t.setItem(r, 3, table_item(d.get("process_name", "—"), THEME["yellow"]))
+                t.setItem(r, 4, table_item(str(d.get("pid", "—"))))
+                t.setItem(r, 5, table_item(row.get("malware_family", "—"), THEME["muted"]))
+
+        # ── DGA ──
+        dga_rows = _db_query(
+            "SELECT timestamp, indicator, details FROM c2_alerts "
+            "WHERE detection_type='DGA_BEACON' ORDER BY timestamp DESC LIMIT 100"
+        )
+        dga_count = len(dga_rows)
+        t = self._net_dga_table
+        t.setRowCount(0)
+        if not dga_rows:
+            r = t.rowCount(); t.insertRow(r)
+            t.setItem(r, 0, table_item("No DGA beacons detected yet.", THEME["muted"]))
+            for i in range(1, 5): t.setItem(r, i, table_item(""))
+        else:
+            for row in dga_rows:
+                import json as _json
+                d = {}
+                try: d = _json.loads(row.get("details") or "{}")
+                except Exception: pass
+                samples = ", ".join(d.get("sample_domains", [])[:4])
+                r = t.rowCount(); t.insertRow(r)
+                t.setItem(r, 0, table_item(row.get("timestamp", ""), THEME["muted"]))
+                t.setItem(r, 1, table_item(row.get("indicator", "—"), THEME["purple"]))
+                t.setItem(r, 2, table_item(str(d.get("entropy", "—")), THEME["yellow"]))
+                t.setItem(r, 3, table_item(str(d.get("burst_count", "—"))))
+                t.setItem(r, 4, table_item(samples or "—", THEME["muted"]))
+
+        # ── JA3 ──
+        ja3_rows = _db_query(
+            "SELECT timestamp, indicator, details FROM c2_alerts "
+            "WHERE detection_type='JA3_MATCH' ORDER BY timestamp DESC LIMIT 100"
+        )
+        ja3_count = len(ja3_rows)
+        t = self._net_ja3_table
+        t.setRowCount(0)
+        if not ja3_rows:
+            r = t.rowCount(); t.insertRow(r)
+            t.setItem(r, 0, table_item("No malicious JA3 fingerprints detected yet.", THEME["muted"]))
+            for i in range(1, 4): t.setItem(r, i, table_item(""))
+        else:
+            for row in ja3_rows:
+                import json as _json
+                d = {}
+                try: d = _json.loads(row.get("details") or "{}")
+                except Exception: pass
+                r = t.rowCount(); t.insertRow(r)
+                t.setItem(r, 0, table_item(row.get("timestamp", ""), THEME["muted"]))
+                t.setItem(r, 1, table_item(row.get("indicator", "—"), THEME["blue"]))
+                t.setItem(r, 2, table_item(d.get("src", "—")))
+                t.setItem(r, 3, table_item(d.get("dst", "—")))
+
+        # ── Update badges ──
+        def _badge(label, n, noun, color):
+            label.setText(f"{noun}: {n}")
+            label.setStyleSheet(
+                f"color: {color}; font-size: 11px; font-weight: bold;"
+                if n > 0 else
+                f"color: {THEME['muted']}; font-size: 11px;"
+            )
+        _badge(self._net_badge_feodo, feodo_count, "Feodo IPs",    THEME["red"])
+        _badge(self._net_badge_dga,   dga_count,   "DGA Beacons",  THEME["purple"])
+        _badge(self._net_badge_ja3,   ja3_count,   "JA3 Matches",  THEME["blue"])
+
+    def _net_clear_seen(self):
+        """Deletes all rows from c2_alerts so the tables start fresh."""
+        from modules.utils import DB_FILE
+        try:
+            import sqlite3 as _sq
+            with _sq.connect(DB_FILE) as c:
+                c.execute("DELETE FROM c2_alerts")
+            self._net_console.append_line("[*] C2 alert history cleared.", THEME["muted"])
+            self._refresh_c2_alerts()
+        except Exception as e:
+            self._net_console.append_line(f"[-] Clear failed: {e}", THEME["red"])
 
     def _isolate_network(self):
         reply = QMessageBox.warning(
@@ -3199,8 +3379,6 @@ class CyberSentinelGUI(QMainWindow):
         ))
         self._workers.append(worker)
         worker.start()
-
-    # ── PAGE: INTEL ───────────────────────────────────────────────────────────
 
     def _build_intel_page(self):
         page = QWidget()
@@ -3281,6 +3459,18 @@ class CyberSentinelGUI(QMainWindow):
         self._intel_progress.setVisible(False)
         self._intel_console.append_line("[+] Intel update complete.", THEME["green"])
         self._check_intel_status()
+        # Hot-reload in-memory blocklists so the running monitors pick up new
+        # entries immediately — no GUI restart required after a feed update or
+        # after manually injecting a test hash into the CSV files.
+        try:
+            if hasattr(self, "ja3"):
+                self.ja3.reload_blocklist()
+            if hasattr(self, "feodo"):
+                from modules.intel_updater import load_feodo_blocklist
+                self.feodo._blocklist = load_feodo_blocklist()
+                print(f"[*] Feodo blocklist reloaded: {len(self.feodo._blocklist)} IPs")
+        except Exception as e:
+            print(f"[!] Blocklist reload error: {e}")
 
     # ── PAGE: INTEL VIEWER ────────────────────────────────────────────────────
 

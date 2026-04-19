@@ -1,4 +1,9 @@
-# CyberSentinel Enterprise Exclusion List
-# Add directory or file paths below to bypass scanning.
-# Example: C:\Program Files\MySafeCompany\
+# CyberSentinel — File & Directory Allowlist
+# Paths or hashes listed here are bypassed by all scan engines.
+# One entry per line. Lines starting with # are comments.
+
 StoreDesktopExtension.exe  # Auto-added by analyst review on 2026-04-12 13:01
+brave.exe
+ollama.exe
+AVGbrowser.exe
+87013959bcdb11ea2764a2caac258994fa649c3ae33465767d6f1a542a0cae42

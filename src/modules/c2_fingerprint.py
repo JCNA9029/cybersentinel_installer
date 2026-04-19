@@ -116,16 +116,24 @@ class FeodoMonitor:
     def _check(self):
         if not self._blocklist:
             return
+        # Include SYN_SENT so async/non-blocking connects (e.g. BeginConnect) are
+        # caught even when the remote C2 host doesn't complete the TCP handshake.
+        TRACKED_STATES = {"ESTABLISHED", "SYN_SENT", "SYN_RECV"}
         for conn in psutil.net_connections(kind="inet"):
-            if conn.status != "ESTABLISHED" or not conn.raddr:
+            if conn.status not in TRACKED_STATES or not conn.raddr:
                 continue
+
+            if conn.raddr.ip not in self._blocklist:
+                continue
+
+            # Only add to _seen AFTER confirming the IP is in the blocklist.
+            # Previously _seen.add() ran before the blocklist check, permanently
+            # suppressing future alerts for any established connection — including
+            # ones caught before the blocklist was populated.
             key = (conn.laddr.port, conn.raddr.ip, conn.raddr.port)
             if key in self._seen:
                 continue
             self._seen.add(key)
-
-            if conn.raddr.ip not in self._blocklist:
-                continue
 
             proc_name, proc_path = "Unknown", "Unknown"
             try:
@@ -208,6 +216,15 @@ class DgaMonitor:
         self._webhooks              = webhooks or {"webhook_url": webhook_url}
         self._window: list[tuple]   = []   # (datetime, domain, entropy)
         self._alerted: set[str]     = set()
+        self._running               = False
+
+    def start(self):
+        """Marks the DGA monitor active. The DNS sniffer thread is started by the caller."""
+        self._running = True
+
+    def stop(self):
+        """Signals the associated DNS sniffer thread to exit."""
+        self._running = False
 
     def analyse(self, fqdn: str) -> dict | None:
         """Analyses a DNS query string for DGA entropy indicators. Returns a finding dict or None."""
@@ -354,7 +371,11 @@ class Ja3Monitor:
 
     def _capture(self):
         try:
-            from scapy.all import sniff, TCP, Raw, IP
+            from scapy.all import sniff, TCP, Raw, IP, conf, get_if_list
+            # Force Npcap/WinPcap backend on Windows so scapy does not fall back
+            # to the loopback-only socket layer, which cannot see TCP port 443.
+            conf.use_pcap = True
+
             def cb(pkt):
                 """Packet capture callback — processes each captured TLS packet."""
                 if not self._running:
@@ -398,6 +419,23 @@ class Ja3Monitor:
                   stop_filter=lambda _: not self._running)
         except Exception as e:
             print(f"[-] JA3 capture error: {e}")
+
+    def reload_blocklist(self):
+        """
+        Hot-reloads the JA3 blocklist from disk without restarting the monitor.
+        Call this after updating intel/ja3_blocklist.csv (e.g. after Update Intel
+        Feeds or after injecting a test hash) so the running sniffer thread picks
+        up new entries immediately.
+        """
+        updated = load_ja3_blocklist()
+        added   = updated - self._blocklist
+        removed = self._blocklist - updated
+        self._blocklist = updated
+        if added or removed:
+            print(
+                f"[*] JA3 blocklist reloaded: {len(self._blocklist)} hashes "
+                f"(+{len(added)} / -{len(removed)})"
+            )
 
     def check_fingerprint(self, ja3: str) -> bool:
         """Checks a JA3 hash string against the SSLBL malicious fingerprint blocklist."""

@@ -6,10 +6,13 @@ from flask import Flask, jsonify, render_template_string
 
 app = Flask(__name__)
 
-# CRITICAL: Always resolve DB path from THIS script's location, never from cwd.
-# This fixes the blank-dashboard bug where dashboard and CLI used different DBs.
+# CRITICAL: Dynamically resolve DB path so it always uses the global database
+# regardless of where the dashboard is launched from.
+import sys
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DB = os.path.join(BASE_DIR, "threat_cache.db")
+sys.path.insert(0, BASE_DIR)
+from modules.utils import DB_FILE
+DB = DB_FILE
 
 # ─── Database helper ──────────────────────────────────────────────────────────
 

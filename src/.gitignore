@@ -30,6 +30,7 @@ v2_predictions.db
 
 # Encrypted config — contains API keys and webhook URL
 config.json
+.onboarding_done
 
 # Quarantine folder — contains actual malware samples
 Quarantine/

@@ -18,6 +18,7 @@
 #   Tier 4    Containment (encrypted quarantine, Windows Firewall host isolation)
 
 import os
+import sys
 import datetime
 import json
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -263,7 +264,7 @@ class ScannerLogic:
     #  TIER 3: LLM ANALYST
     # ─────────────────────────────────────────────
 
-    def generate_llm_report(self, family_name, detected_apis, file_path, confidence_score, sha256, file_size_mb):
+    def generate_llm_report(self, family_name, detected_apis, file_path, confidence_score, sha256, file_size_mb, dss_score=None):
         # ── Pre-compute all deterministic values ──────────────────────────────
         # These are ground-truth values owned by Python. The LLM never writes
         # any of these — it only generates behavioral narrative sections.
@@ -274,11 +275,19 @@ class ScannerLogic:
             )
             if len(detected_apis) > max_apis:
                 extracted_api_text += f"\n- ... and {len(detected_apis) - max_apis} more."
+        elif confidence_score >= 60:
+            extracted_api_text = "[EMPTY IAT - SUSPECTED DYNAMIC RESOLUTION / PACKED BINARY]"
         else:
-            extracted_api_text = "None extracted. Likely API hashing or packing."
+            extracted_api_text = "[EMPTY IAT]"
 
-        live_dss        = calculate_live_dss(detected_apis, file_path)
-        live_confidence = int((live_dss / 10.0) * 100)
+        # Use the passed context-aware dss_score if available (scaled to 10),
+        # otherwise fall back to the static API-based calculate_live_dss.
+        if dss_score is not None:
+            live_dss = round(float(dss_score) * 10, 1)
+        else:
+            live_dss = calculate_live_dss(detected_apis, file_path)
+            
+        live_confidence = int(confidence_score) if confidence_score else int((live_dss / 10.0) * 100)
 
         if live_dss >= 8.0:
             triage_priority = "CRITICAL"
@@ -368,7 +377,7 @@ class ScannerLogic:
                 for i, api in enumerate(api_list)
             ]
             strings_block = "\n".join(strings_lines)
-            return (
+            yara_rule = (
                 f"\n### 🎯 Resilient YARA Rule (Auto-Generated)\n"
                 f"rule Detect_{rule_name} {{\n"
                 f"    meta:\n"
@@ -381,42 +390,79 @@ class ScannerLogic:
                 f"        uint16(0) == 0x5A4D and any of ($api*)\n"
                 f"}}"
             )
+            
+            # [THESIS FIX] YARA Rule Validation Layer
+            # Ensures generated rules are syntactically valid to prevent hallucinated signatures from breaking downstream tools.
+            try:
+                import yara
+                compiled_rule = yara.compile(source=yara_rule)
+            except ImportError:
+                yara_rule += "\n// [!] yara-python not installed; rule syntax not verified."
+            except Exception as e:
+                yara_rule = f"// [!] YARA generation failed validation: {e}"
+                
+            return yara_rule
 
         # ── LLM prompt ────────────────────────────────────────────────────────
-        # The model was trained on a fixed output format that includes KQL and
-        # YARA. We cannot override that via prompting alone — the training
-        # weights dominate. Strategy: ask only for narrative sections, add stop
-        # tokens to halt generation before structured blocks, then strip and
-        # replace any structured output that slips through with deterministic
-        # Python-generated versions. The LLM handles what it is good at —
-        # behavioral narrative and attack maneuver grouping.
         system_msg = (
-            "You are CyberSentinel Pro, a Tier-3 Malware Research Assistant. "
-            "Provide high-fidelity behavioral analysis for SOC environments.\n\n"
-            "OUTPUT EXACTLY THESE SECTIONS IN ORDER — NOTHING ELSE:\n"
-            "1. ### 🛡️ CyberSentinel High-Fidelity Verdict\n"
-            "   One paragraph executive summary. State verdict label only — no scores or percentages.\n"
-            "2. ### ⚔️ Attack Maneuvers (Behavioral Analysis)\n"
-            "   Group APIs into named maneuvers. Use full MITRE sub-technique IDs (e.g. T1055.001).\n"
-            "3. ### 💥 Blast Radius\n"
-            "   One paragraph on maximum potential impact if the threat executes fully.\n"
-            "4. ### 🕵️ Forensic Artifacts (Hunt List)\n"
-            "   Specific file paths, registry keys, memory indicators.\n\n"
-            "STOP after Forensic Artifacts. Do NOT write KQL, SIEM queries, or YARA rules."
+            "You are CyberSentinel Pro, a Tier-3 Malware Research Assistant. Your objective is to provide high-fidelity, high-confidence behavioral analysis for production SOC environments.\n\n"
+            "STRICT OPERATIONAL RULES:\n"
+            "1. **Confidence Rating**: Assign a Confidence Score (1-100%) for your verdict based on the signal-to-noise ratio of the API trace.\n"
+            "2. **Behavioral Attribution**: Do not just list APIs. Group them into \"Combat Maneuvers\" (e.g., \"Reflective Loading Maneuver\").\n"
+            "3. **Hunt Queries**: Provide a high-fidelity Splunk SPL or KQL query targeting specific behavioral telemetry (not just process names).\n"
+            "4. **Resilience**: Ensure YARA rules target the *logic* of the attack (e.g., specific combinations of memory flags) to avoid bypass via API obfuscation.\n"
+            "5. **Impact Assessment**: State the \"Blast Radius\" (e.g., Credential Theft, Ransomware Deployment, or Data Exfiltration).\n\n"
+            "IMPORTANT: If the API TELEMETRY TRACE is empty or states the IAT is unreadable, "
+            "do NOT conclude False Positive. An empty IAT combined with a high ML confidence score "
+            "is the structural signature of a staged payload, loader, or packed binary. "
+            "Analyze it as such — focus on what a stager of this type typically does at runtime.\n\n"
+            "OUTPUT FORMAT:\n"
+            "### 🛡️ CyberSentinel High-Fidelity Verdict [DSS: X.X/10 | Confidence: XX%]\n"
+            "Executive summary of the threat actor behavior and the immediate risk level.\n\n"
+            "### ⚔️ Attack Maneuvers (Behavioral Analysis)\n"
+            "- **Maneuver [Name]**: [API Chain] -> [Tactical Impact] -> [MITRE Technique].\n\n"
+            "### 🕵️ Forensic Artifacts (Hunt List)\n"
+            "- **Registry/Files**: List specific paths or keys likely modified.\n"
+            "- **Mutexes/Pipes**: List expected synchronization objects.\n\n"
+            "### 📊 SIEM/EDR Detection (Production-Grade)\n"
+            "[Sigma or KQL code block with high specificity]\n\n"
+            "### 🎯 Resilient YARA Rule\n"
+            "[YARA rule focusing on behavioral sequences or specialized strings]\n\n"
+            "**Blast Radius**: [Impact Assessment]"
         )
+
+        # When the IAT is empty but the ML engine flagged the file, provide a concise structural signature tag
+        # instead of a long paragraph or fabricated APIs, ensuring strict SOC-grade factual telemetry.
+        if not detected_apis and confidence_score >= 60:
+            _api_trace = "[EMPTY IAT - SUSPECTED DYNAMIC RESOLUTION / PACKED BINARY]"
+            if family_name == "Unknown - Cloud/Signature Detection":
+                family_name = "Staged Payload / Packed Executable"
+        elif not detected_apis:
+            _api_trace = "[EMPTY IAT]"
+        else:
+            _api_trace = ", ".join(detected_apis)
+
+        # Determine a mock parent process and MITRE label for the prompt based on context
+        parent_process = "explorer.exe" if "Downloads" in sanitized_path else "unknown"
+        mitre_labels = "None"
+        if confidence_score >= 60 and detected_apis:
+            # Just grab a random label for the prompt if we have one
+            for api in detected_apis:
+                if api in api_context:
+                    mitre_labels = api_context[api].get("mitre_mapping", "None")
+                    break
 
         real_user = (
             f"--- [START OF TELEMETRY] ---\n"
             f"EXECUTION CONTEXT:\n"
             f"- Filename: {os.path.basename(file_path)}\n"
             f"- Full Path: {sanitized_path}\n"
-            f"- File Size: {file_size_mb:.2f} MB\n"
+            f"- Parent Process: {parent_process}\n"
             f"THREAT METADATA:\n"
-            f"- Classification: {family_name}\n"
             f"- DSS Score: {live_dss}/10\n"
-            f"- Triage Priority: {triage_priority}\n"
+            f"- MITRE Labels: {mitre_labels}\n"
             f"API TELEMETRY TRACE:\n"
-            f"{chr(44).join(detected_apis) if detected_apis else 'NONE'}\n"
+            f"{_api_trace}\n"
             f"--- [END OF TELEMETRY] ---"
         )
 
@@ -431,18 +477,14 @@ class ScannerLogic:
             "options": {
                 "temperature": 0.1,
                 "num_ctx":     4096,
-                "num_predict": 600,
+                "num_predict": 1500,
                 # Stop tokens — halt generation before the model writes structured blocks
                 "stop": [
                     "<|im_end|>",
-                    "### 📊",
-                    "### 🎯",
-                    "DeviceImageLoadEvents",
-                    "DeviceEvents\n|",
-                    "rule Detect_",
-                    "```kql",
-                    "```yara",
-                    "```KQL",
+                    "<|endoftext|>",
+                    "<|eot_id|>",
+                    "User:",
+                    "user:",
                 ]
             },
             "stream": True,
@@ -479,19 +521,37 @@ class ScannerLogic:
             # deterministic Python-generated versions below.
             ai_text = "".join(tokens)
 
+            # [THESIS FIX] Robust LLM Output Sanitization
+            # The LLM sometimes echoes the prompt or enters a repetition loop. We sanitize this post-generation.
+            
+            # 1. Strip echoed telemetry blocks (if the model hallucinates the prompt at the very beginning)
             for pattern in (
-                r"### 📊.*",
-                r"### 🎯.*",
-                r"```kql.*?```",
-                r"```yara.*?```",
-                r"```kql.*",
-                r"```KQL.*",
-                r"DeviceImageLoadEvents.*",
-                r"rule Detect_.*",
+                r"```plaintext.*?--- \[END OF TELEMETRY\] ---\s*(```)?\s*",
+                r"--- \[START OF TELEMETRY\].*?--- \[END OF TELEMETRY\] ---\s*",
             ):
                 ai_text = re.sub(pattern, "", ai_text, flags=re.DOTALL | re.IGNORECASE)
 
-            ai_text = ai_text.rstrip()
+            # 2. Prevent Looping: If the model finishes the report and starts repeating itself, cut it off.
+            # We look for section headers that should only appear at the very beginning, or prompt markers.
+            repetition_markers = [
+                "--- [END OF TELEMETRY] ---",
+                "--- [START OF TELEMETRY] ---",
+                "### 🛡️ CyberSentinel High-Fidelity Verdict",
+                "**Analysis Summary:**",
+                "[END OF REPORT]",
+                "[END OF FORENSIC ARTIFACTS]",
+                "[END OF ANALYSIS]",
+                "[END OF DOCUMENTATION]",
+                "--- \n["
+            ]
+            
+            for marker in repetition_markers:
+                # Only check for repetitions after the first 150 characters to allow the initial header
+                idx = ai_text.find(marker, 150)
+                if idx != -1:
+                    ai_text = ai_text[:idx]
+
+            ai_text = ai_text.strip()
 
             # ── Assemble final report ─────────────────────────────────────────
             # Deterministic Header → LLM Narrative → Deterministic KQL → Deterministic YARA
@@ -529,7 +589,8 @@ f"    Run: ollama create {self.llm_model} -f Modelfile"
 
     def _prompt_quarantine(self, file_path, sha256, threat_source, verdict,
                            filename="", ai_already_done=False,
-                           detected_apis=None):
+                           detected_apis=None, cached_ai_report=None,
+                           file_size_mb=0.0, confidence_score=100.0):
         """
         Tier 4 containment — called for every malicious verdict.
         Modes:
@@ -661,6 +722,15 @@ f"    Run: ollama create {self.llm_model} -f Modelfile"
         # Step 6: AI Analyst Report — skip if ML handler already ran it
         if ai_already_done:
             self.log_event("[*] AI report already generated above.")
+        elif cached_ai_report:
+            self.log_event("[*] Retrieving cached AI Analyst report...")
+            self.session_log.append("--- AI Analyst Report (Cached) ---")
+            self.session_log.append(cached_ai_report)
+            if gui and "ai_report" in gui:
+                gui["ai_report"](cached_ai_report)
+            else:
+                self.log_event("--- AI Analyst Report (Cached) ---")
+                self.log_event(cached_ai_report)
         else:
             if gui:
                 run_ai = gui["ask"](
@@ -678,11 +748,14 @@ f"    Run: ollama create {self.llm_model} -f Modelfile"
                     family_name="Unknown - Cloud/Signature Detection",
                     detected_apis=detected_apis or [],
                     file_path=file_path or "",
-                    confidence_score=100.0,
+                    confidence_score=confidence_score,
                     sha256=sha256,
-                    file_size_mb=0.0,
+                    file_size_mb=file_size_mb,
                 )
                 spinner.stop()
+
+                utils.save_ai_report(sha256, report)
+
                 # Save report to session log for the .txt export
                 self.session_log.append("--- AI Analyst Report ---")
                 self.session_log.append(report)
@@ -736,6 +809,7 @@ f"    Run: ollama create {self.llm_model} -f Modelfile"
         sha256: str,
         file_size_mb: float,
         ml_result: dict,
+        dss_score: float = 0.0,
     ):
         """Orchestrates LLM reporting for ML-detected threats.
         Supports three modes: headless (auto), GUI (callbacks), CLI (input()).
@@ -762,53 +836,14 @@ f"    Run: ollama create {self.llm_model} -f Modelfile"
         # Release the feature array immediately to prevent memory growth in long-running daemon mode.
         if features is not None:
             del ml_result["features"]
-    
-        # Resolve GUI callbacks — mirrors the pattern in scan_file() and _prompt_quarantine()
-        gui = getattr(self, "gui_callbacks", None)
-
-        # AI Analyst report
-        if self.headless_mode:
-            run_ai = True
-        elif gui:
-            run_ai = gui["ask"](
-                f"Malware family: {fam_name}\n\n"
-                "Generate AI analyst report via Ollama?\n"
-                "Includes API behavioral analysis, MITRE mapping, and YARA rule.\n"
-                "May take 30-60 seconds."
-            )
-        else:
-            run_ai = input("\n[?] Generate local AI analyst report via Ollama? (Y/N): ").strip().lower() == "y"
-
-        if run_ai:
-            self.log_event("[*] Generating AI report...")
-            spinner = Spinner("[*] Generating AI threat report (this may take a moment)...")
-            spinner.start()
-            report = self.generate_llm_report(
-                fam_name,
-                ml_result.get("detected_apis", []),
-                file_path,
-                ml_result["score"] * 100,
-                sha256,
-                file_size_mb,
-            )
-            spinner.stop()
-            # Save to session log for .txt export
-            self.session_log.append("\n--- AI Analyst Report ---")
-            self.session_log.append(report)
-            if gui and "ai_report" in gui:
-                # GUI mode: _show_ai_report handles dialog + console echo
-                gui["ai_report"](report)
-            else:
-                # CLI mode: print directly
-                self.log_event("\n--- AI Analyst Report ---")
-                self.log_event(report)
-        else:
-            self.log_event("[*] AI report skipped.")
 
         self._prompt_quarantine(
             file_path, sha256, "Local ML Engine", "CRITICAL RISK",
-            ai_already_done=True,
+            ai_already_done=False,
             detected_apis=ml_result.get("detected_apis", []),
+            file_size_mb=file_size_mb,
+            confidence_score=ml_result.get("score", 1.0) * 100.0,
+            dss_score=dss_score,
         )
 
     # ─────────────────────────────────────────────
@@ -839,6 +874,11 @@ f"    Run: ollama create {self.llm_model} -f Modelfile"
         sha256 = utils.get_sha256(file_path)
         if not sha256:
             colors.error("[-] Cannot read file — OS may have locked it.")
+            return
+
+        # ── Tier 0: Exclusion list (Hash Check) ─────────────────────────────
+        if utils.is_excluded(file_path, file_hash=sha256):
+            self.log_event(f"[*] ALLOWLISTED (Hash match): {os.path.basename(file_path)} — bypassed per policy.")
             return
 
         try:
@@ -874,12 +914,25 @@ f"    Run: ollama create {self.llm_model} -f Modelfile"
             # Malicious cache hits must still trigger webhook and quarantine — not silently return.
             cached_verdict = cached['verdict'].upper()
             if any(v in cached_verdict for v in ("MALICIOUS", "CRITICAL")):
+                # Try to fetch last known dynamic risk score for this hash
+                cached_dss = 0.0
+                try:
+                    with sqlite3.connect(utils.DB_FILE) as conn:
+                        row = conn.execute(
+                            "SELECT dynamic_score FROM risk_scores WHERE sha256=? ORDER BY timestamp DESC LIMIT 1",
+                            (sha256,)
+                        ).fetchone()
+                        if row: cached_dss = row[0]
+                except Exception: pass
+
                 self._prompt_quarantine(
                     file_path, sha256,
                     f"Cache Hit ({cached['source']})",
                     cached['verdict'],
                     filename,
                     detected_apis=cached_apis,
+                    cached_ai_report=cached.get('ai_report'),
+                    dss_score=cached_dss,
                 )
             return
 
@@ -981,16 +1034,10 @@ f"    Run: ollama create {self.llm_model} -f Modelfile"
                             )
                         # Run SHAP explainability on the cloud-confirmed malicious file
                         try:
-                            from .explainability import run_shap_explanation
-                            run_shap_explanation(
-                                self.ml_scanner.booster,
-                                ml_result_cloud["features"],
-                                ml_v,
-                                ml_sc,
-                                sha256,
-                                filename,
-                                self.log_event,
-                            )
+                            shap_expl = ml_result_cloud.get("shap_explanation")
+                            if shap_expl:
+                                for line in shap_expl["narrative"].splitlines():
+                                    self.log_event(line)
                         except Exception:
                             pass
                     else:
@@ -1033,29 +1080,11 @@ f"    Run: ollama create {self.llm_model} -f Modelfile"
         ml_verdict = ml_result["verdict"]
         score_pct = ml_result["score"]
 
-        if ml_verdict == "CRITICAL RISK":
-            self._handle_critical_ml_threat(file_path, sha256, file_size_mb, ml_result)
-        elif ml_verdict == "SUSPICIOUS":
-            colors.warning("[!] Anomalies detected but below isolation threshold. Sandbox testing advised.")
-            if self.webhook_url or self.webhook_high:
-                import socket as _sock, datetime as _dt
-                utils.route_webhook_alert(
-                    self._webhooks(),
-                    "HIGH",
-                    "⚠️ Suspicious File Detected",
-                    {
-                        "File":     os.path.basename(file_path) if file_path else "Unknown",
-                        "SHA256":   sha256,
-                        "Verdict":  "SUSPICIOUS",
-                        "Score":    f"{ml_result['score']:.2%}",
-                        "Severity": "HIGH",
-                        "Host":     _sock.gethostname(),
-                        "Time":     _dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                        "Action":   "Sandbox testing advised",
-                    },
-                )
-        else:
-            colors.success("[+] File structure aligns with safe parameters.")
+        # [THESIS FIX] Log custom YARA matches if any
+        yara_matches = ml_result.get("yara_matches")
+        if yara_matches:
+            self.log_event(f"[*] CUSTOM YARA MATCHES: {', '.join(yara_matches)}")
+            self.session_log.append(f"[*] YARA MATCHES: {', '.join(yara_matches)}")
 
         self.session_log.append(f"[*] TIER 2: {ml_verdict} ({score_pct:.2%})")
         ml_context = f"{filename} | Tier 2: Local ML ({score_pct:.2%})"
@@ -1066,7 +1095,6 @@ f"    Run: ollama create {self.llm_model} -f Modelfile"
             detected_apis=ml_result.get("detected_apis", []),
         )
 
-        # ── Novel Feature: Dynamic Risk Scoring ──────────────────────────────
         # Compute context-aware composite risk score combining ML verdict,
         # time-of-day, active threats, chain presence, and baseline deviation.
         try:
@@ -1089,16 +1117,8 @@ f"    Run: ollama create {self.llm_model} -f Modelfile"
         # ── Novel Feature: SHAP Explanation output ───────────────────────────
         shap_expl = ml_result.get("shap_explanation")
         if shap_expl:
-            self.log_event("[*] SHAP Feature Attribution (top factors):")
-            for feat in shap_expl["top_features"][:5]:
-                arrow = "↑" if feat["shap_value"] > 0 else "↓"
-                self.log_event(
-                    f"    {arrow} {feat['feature'][:55]:<55} "
-                    f"({feat['shap_value']:+.4f})"
-                )
-            # Most influential feature group
-            top_group = next(iter(shap_expl["group_summary"]))
-            self.log_event(f"    Primary driver group: {top_group}")
+            for line in shap_expl["narrative"].splitlines():
+                self.log_event(line)
 
         # ── Novel Feature: Drift Alert propagation ───────────────────────────
         drift = ml_result.get("drift_alert")
@@ -1123,9 +1143,29 @@ f"    Run: ollama create {self.llm_model} -f Modelfile"
             pass  # Non-critical: operation continues regardless
 
         if ml_verdict == "CRITICAL RISK":
-            self._handle_critical_ml_threat(file_path, sha256, file_size_mb, ml_result)
+            self._handle_critical_ml_threat(
+                file_path, sha256, file_size_mb, ml_result,
+                dss_score=drs.get('dynamic_score', 0.0)
+            )
         elif ml_verdict == "SUSPICIOUS":
             colors.warning("[!] Anomalies detected but below isolation threshold. Sandbox testing advised.")
+            if self.webhook_url or self.webhook_high:
+                import socket as _sock, datetime as _dt
+                utils.route_webhook_alert(
+                    self._webhooks(),
+                    "HIGH",
+                    "⚠️ Suspicious File Detected",
+                    {
+                        "File":     os.path.basename(file_path) if file_path else "Unknown",
+                        "SHA256":   sha256,
+                        "Verdict":  "SUSPICIOUS",
+                        "Score":    f"{ml_result['score']:.2%}",
+                        "Severity": "HIGH",
+                        "Host":     _sock.gethostname(),
+                        "Time":     _dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                        "Action":   "Sandbox testing advised",
+                    },
+                )
         else:
             colors.success("[+] File structure aligns with safe parameters.")
 
@@ -1273,6 +1313,9 @@ f"    Run: ollama create {self.llm_model} -f Modelfile"
             )
             return
         file_hash = file_hash.strip().lower()
+        if utils.is_excluded("", file_hash=file_hash):
+            self.log_event(f"[*] ALLOWLISTED (Hash): {file_hash} — bypassed per policy.")
+            return
 
         self.log_event("─" * 60)
         colors.info(f"[*] Manual Hash Scan: {file_hash}")
@@ -1480,7 +1523,7 @@ f"    Run: ollama create {self.llm_model} -f Modelfile"
                     fname_input.setPlaceholderText("e.g. my_scan_report")
                     fname_row.addWidget(fname_lbl)
                     fname_row.addWidget(fname_input)
-                    ext_lbl = QLabel(".txt")
+                    ext_lbl = QLabel(".html")
                     ext_lbl.setStyleSheet(f"color: {_MUTED}; font-size: 11px; border: none;")
                     fname_row.addWidget(ext_lbl)
                     layout.addLayout(fname_row)
@@ -1511,27 +1554,37 @@ f"    Run: ollama create {self.llm_model} -f Modelfile"
                         # Sanitize — remove path separators and dangerous chars
                         import re
                         safe = re.sub(r'[\\/:*?"<>|]', '_', raw)
-                        if not safe.endswith(".txt"):
-                            safe += ".txt"
+                        if not safe.endswith(".html"):
+                            safe += ".html"
                         filepath = os.path.join(analysis_dir, safe)
                         # Avoid overwrite silently — append timestamp if exists
                         if os.path.exists(filepath):
                             import datetime as _dt2
                             ts = _dt2.datetime.now().strftime("_%H%M%S")
-                            safe = safe.replace(".txt", f"{ts}.txt")
+                            safe = safe.replace(".html", f"{ts}.html")
                             filepath = os.path.join(analysis_dir, safe)
                         try:
+                            # [THESIS FIX] HTML Export for Analyst Reports
                             with open(filepath, "w", encoding="utf-8") as f:
-                                f.write("=" * 60 + "\n")
-                                f.write(" CYBERSENTINEL v1 — SCAN SESSION REPORT\n")
-                                f.write(
-                                    f" Generated : {_dt.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
-                                )
-                                f.write("=" * 60 + "\n\n")
-                                f.write("\n".join(self.session_log))
-                                f.write("\n\n" + "=" * 60 + "\n")
-                                f.write(" END OF REPORT\n")
-                                f.write("=" * 60 + "\n")
+                                html = f"""<!DOCTYPE html>
+<html>
+<head>
+<title>CyberSentinel Scan Report</title>
+<style>
+body {{ background: #0d1117; color: #c9d1d9; font-family: Consolas, monospace; padding: 20px; }}
+h2 {{ color: #58a6ff; border-bottom: 1px solid #30363d; padding-bottom: 10px; }}
+.log {{ background: #161b22; padding: 15px; border: 1px solid #30363d; border-radius: 5px; white-space: pre-wrap; }}
+</style>
+</head>
+<body>
+<h2>🛡️ CyberSentinel Scan Report</h2>
+<p><b>Generated:</b> {_dt.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
+<div class="log">
+{chr(10).join(self.session_log)}
+</div>
+</body>
+</html>"""
+                                f.write(html)
                             self.log_event(
                                 f"[+] Session report saved: Analysis Files\\{safe}"
                             )

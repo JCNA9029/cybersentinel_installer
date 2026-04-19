@@ -24,7 +24,12 @@ OBFUSCATION_PATTERNS: list[tuple[str, str, str]] = [
     (r"\[Runtime\.InteropServices\.Marshal\]",           "T1055",     "P/Invoke via Marshal — memory injection pattern"),
     (r"New-Object\s+Net\.WebClient|DownloadString\(",   "T1105",     "WebClient download cradle — remote payload fetch"),
     (r"Start-BitsTransfer.*http",                       "T1197",     "BITS transfer cradle"),
-    (r"-[nN]o[pP]rofile|-nop\b",                       "T1059.001", "PowerShell -NoProfile flag — stealth execution"),
+    # -NoProfile is a routine configuration flag used by virtually every
+    # legitimate script host (VS Code extensions, npm postinstall, CI runners).
+    # It is not an obfuscation indicator on its own — removed to prevent it
+    # combining with -ExecutionPolicy Bypass to hit ALERT_THRESHOLD=2 on
+    # benign dev-tool invocations.  Real malicious PS will still trigger via
+    # Base64 encoded command, IEX, download cradle, or injection API patterns.
     (r"-[wW]indow[sS]tyle\s+[hH]idden|-[wW]\s+[hH]id","T1059.001", "PowerShell hidden window (-WindowStyle Hidden)"),
     (r"-[eE]xec[utionPolicy]*\s+[bB]ypass",             "T1059.001", "ExecutionPolicy bypass"),
     (r"VirtualAlloc|WriteProcessMemory|CreateThread",   "T1055",     "Win32 memory allocation APIs via PowerShell"),

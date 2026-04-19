@@ -71,6 +71,28 @@ TRUSTED_PARENTS = {
     "wmiprvse.exe", "taskhostw.exe", "explorer.exe",
 }
 
+# ─── Developer / IDE tool parents ────────────────────────────────────────────
+# Node.js, VS Code, and similar dev tools routinely spawn powershell.exe with
+# -EncodedCommand for legitimate build/postinstall scripts.  We still alert
+# (unlike TRUSTED_PARENTS which are OS-level) but cap confidence at MEDIUM so
+# analysts are informed without generating HIGH noise during development.
+# These are NOT added to TRUSTED_PARENTS because they can still be weaponised
+# (malware drops node.exe to run payloads) — we just reduce, not suppress.
+DEV_TOOL_PARENTS: frozenset[str] = frozenset({
+    "node.exe",          
+    "code.exe",        
+    "code - insiders.exe",     
+    "npm.cmd", "npm",
+    "yarn.cmd", "yarn",
+    "pnpm.cmd", "pnpm",
+    "python.exe", "python3.exe",  
+    "git.exe",           
+    "gradle",  "gradlew",
+    "java.exe",     
+    "node.exe", "code.exe", "electron.exe",
+    "npm.cmd", "yarn.exe", "pnpm.exe",     
+})
+
 # Entropy threshold — strings above this Shannon entropy in a cmdline arg
 # are statistically unlikely to be human-typed and indicate Base64/obfuscation.
 ENTROPY_THRESHOLD = 4.2
@@ -120,24 +142,60 @@ def _extract_binary_name(exe_path: str) -> str:
     path = exe_path.strip().strip('"\'')
     return os.path.basename(path).lower()
 
+# Chrome/Edge extension IDs are 32 lowercase alphanumeric chars.
+# Suppression requires ALL of:
+#   1. Every entropy hit matches chrome-extension://<32 alphanum chars>
+#   2. The cmd.exe target path resolves to a trusted software directory
+#      (Program Files, ProgramData — never AppData\Roaming or Temp)
+# This covers both the installer case (Acrobat parent) AND the browser case
+# (user opens PDF in Brave → Acrobat extension re-registers via brave.exe)
+# without opening a bypass for malicious extensions, whose payloads will
+# always point outside trusted install directories.
+_CHROME_EXT_RE = re.compile(r"^chrome-extension://[a-z0-9]{32}", re.IGNORECASE)
+
+# Trusted base paths for native-messaging host registration targets.
+# AppData/Roaming, Temp, and user-writable locations are intentionally excluded —
+# a malicious extension dropping a payload there should always alert.
+_TRUSTED_INSTALL_ROOTS = (
+    "c:\\program files\\",
+    "c:\\program files (x86)\\",
+    "c:\\programdata\\",
+    "c:\\windows\\",
+)
+
+def _is_path_token(token: str) -> bool:
+    """Returns True if the token is a filesystem path — high entropy but not obfuscation."""
+    if "\\" in token or token.startswith("//"):
+        return True
+    if len(token) > 1 and token[1] == ":":
+        return True
+    ext = os.path.splitext(token)[1].lower()
+    return ext in {".exe",".dll",".sys",".ps1",".bat",".cmd",
+                   ".vbs",".js",".hta",".msi",".lnk",".com",
+                   ".ocx",".cpl",".scr",".inf",".reg"}
+
 def _high_entropy_args(cmdline: str) -> list[str]:
     """
-    Scans command-line arguments for high-entropy tokens that indicate
-    Base64 encoding or other obfuscation, regardless of specific patterns.
+    Scans command-line arguments for high-entropy tokens indicating Base64/obfuscation.
 
-    Returns a list of suspicious high-entropy tokens found.
+    File system paths are explicitly skipped — their entropy is naturally high
+    (mixed case, dots, backslashes) but has no detection value. Without this
+    filter, svchost.exe and node.exe spawning legitimate tools with long DLL
+    paths generate constant LOW-confidence false positives.
     """
     suspicious = []
-    # Split on common argument separators
     tokens = re.split(r'[\s,;|&]+', cmdline)
     for token in tokens:
-        # Only check tokens of meaningful length
         clean = token.strip('"\'')
-        if len(clean) >= 20:
-            ent = _shannon_entropy(clean)
-            if ent >= ENTROPY_THRESHOLD:
-                suspicious.append(clean[:40] + ("..." if len(clean) > 40 else ""))
+        if len(clean) < 20:
+            continue
+        if _is_path_token(clean):
+            continue
+        ent = _shannon_entropy(clean)
+        if ent >= ENTROPY_THRESHOLD:
+            suspicious.append(clean[:40] + ("..." if len(clean) > 40 else ""))
     return suspicious
+
 
 class LolbasDetector:
     """
@@ -278,12 +336,14 @@ class LolbasDetector:
             return None
 
         # Determine parent context for confidence adjustment
-        parent_lower = (parent_name or "").lower()
+        parent_lower        = (parent_name or "").lower()
         is_high_risk_parent = parent_lower in HIGH_RISK_PARENTS
         is_trusted_parent   = parent_lower in TRUSTED_PARENTS
+        is_dev_tool_parent  = parent_lower in DEV_TOOL_PARENTS
 
-        finding = None
-        base_score = 0
+        finding          = None
+        base_score       = 0
+        confidence_score = 0
         detection_source = ""
 
         # Layer 3: Built-in high-confidence pattern matching
@@ -353,23 +413,56 @@ class LolbasDetector:
                 known_system = any(
                     name_lower == p[0].lower() for p in BUILTIN_PATTERNS
                 )
-                if known_system:
-                    finding = {
-                        "type":        "LOLBIN_ABUSE",
-                        "binary":      name_lower,
-                        "mitre":       "T1027",
-                        "description": (
-                            f"High-entropy argument detected — possible obfuscation. "
-                            f"Suspicious tokens: {', '.join(entropy_hits[:2])}"
-                        ),
-                        "cmdline":     cmdline,
-                        "cmdline_normalized": cmdline_normalized,
-                        "source":      "entropy-analysis",
-                        "parent_name": parent_name,
-                        "parent_pid":  parent_pid,
-                    }
-                    base_score = 1
-                    detection_source = "entropy analysis"
+                if known_system and not is_trusted_parent:
+                    # Suppress entropy-only alerts when a trusted system service
+                    # (svchost, wmiprvse, msiexec) is the parent.  These parents
+                    # legitimately invoke rundll32/powershell with long DLL paths
+                    # whose structural entropy exceeds the threshold without any
+                    # actual obfuscation.  If there is a real pattern match (Layer 3/4)
+                    # the finding already exists and this branch is not reached.
+
+                    # ── chrome-extension:// installer suppression ─────────────
+                    # Software installers (Acrobat, Zoom, etc.) spawn cmd.exe with
+                    # a chrome-extension:// URI to register a native messaging host.
+                    # The 32-char extension ID is structurally identifiable and the
+                    # parent is never a browser in the legitimate case.
+                    # If the parent IS a browser, the same pattern is suspicious
+                    # (extension abusing cmd.exe) — we let the alert through.
+                    _all_ext_ids = (
+                        entropy_hits
+                        and all(_CHROME_EXT_RE.match(t) for t in entropy_hits)
+                    )
+                    # Check that the cmd.exe target path (the executable being
+                    # invoked after /c) resolves to a trusted install directory.
+                    # This makes the suppression safe even when the parent is
+                    # brave.exe — e.g. user opens PDF in Brave, Acrobat extension
+                    # re-registers via WCChromeExt which lives in Program Files.
+                    # A malicious extension payload will always land in AppData,
+                    # Temp, or another user-writable path and will still alert.
+                    _cmd_target = cmdline_normalized.lower()
+                    _target_is_trusted = any(
+                        root in _cmd_target
+                        for root in _TRUSTED_INSTALL_ROOTS
+                    )
+                    if _all_ext_ids and _target_is_trusted:
+                        pass  # benign extension registration from a trusted path
+                    else:
+                        finding = {
+                            "type":        "LOLBIN_ABUSE",
+                            "binary":      name_lower,
+                            "mitre":       "T1027",
+                            "description": (
+                                f"High-entropy argument detected — possible obfuscation. "
+                                f"Suspicious tokens: {', '.join(entropy_hits[:2])}"
+                            ),
+                            "cmdline":     cmdline,
+                            "cmdline_normalized": cmdline_normalized,
+                            "source":      "entropy-analysis",
+                            "parent_name": parent_name,
+                            "parent_pid":  parent_pid,
+                        }
+                        base_score = 1
+                        detection_source = "entropy analysis"
             else:
                 # Entropy corroborates an existing finding — boost confidence
                 base_score = min(3, base_score + 1)
@@ -429,6 +522,30 @@ class LolbasDetector:
         elif is_trusted_parent:
             confidence_score = max(1, confidence_score - 1)
             finding["parent_risk"] = "LOW — spawned by trusted system service"
+        elif is_dev_tool_parent:
+            # Dev tools (node.exe, VS Code, npm) legitimately spawn powershell
+            # with flags like -NoProfile and -ExecutionPolicy Bypass for build
+            # scripts, postinstall hooks, and editor extensions.  These stealth
+            # flags alone are not actionable in a dev context.
+            # Only fire if the cmdline contains a genuinely high-risk payload:
+            # encoded commands, download cradles, IEX, or injection APIs.
+            # If not, suppress entirely — the analyst would dismiss it anyway
+            # and repeated MEDIUM noise degrades trust in the detector.
+            _DEV_TOOL_HIGH_RISK = re.compile(
+                r"-e[nc]{0,6}\s+[A-Za-z0-9+/=]{20,}"                # encoded command
+                r"|IEX\b|Invoke-Expression\b"                          # dynamic execution
+                r"|DownloadString\s*\(|New-Object\s+Net\.WebClient"   # download cradle
+                r"|Start-BitsTransfer.*http"                           # BITS cradle
+                r"|Invoke-Mimikatz|Invoke-ReflectivePEInjection"       # known offensive
+                r"|VirtualAlloc|WriteProcessMemory|CreateThread",      # injection APIs
+                re.IGNORECASE,
+            )
+            if not _DEV_TOOL_HIGH_RISK.search(cmdline_normalized):
+                # Stealth flags only (-NoProfile, -ExecutionPolicy Bypass, etc.)
+                # from a known dev tool parent — not actionable.
+                return None
+            confidence_score = min(2, confidence_score)
+            finding["parent_risk"] = f"MEDIUM — dev tool parent ({parent_name}); verify if expected"
         else:
             finding["parent_risk"] = "MEDIUM" if parent_name else "UNKNOWN"
 

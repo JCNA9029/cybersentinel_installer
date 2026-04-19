@@ -256,10 +256,16 @@ def _monitor_processes(logic, lolbas, byovd, baseline, dga, lolbin, fileless):
             )
             if hit:
                 colors.critical(lolbas.format_alert(hit))
+                # [THESIS FIX] User-Mode Active Blocking
+                if hit.get("confidence") == "HIGH" and pid:
+                    utils.terminate_process(pid, name)
 
             lolbin_hit = lolbin.check(name, cmdline, pid=pid)
             if lolbin_hit:
                 lolbin.print_alert(lolbin_hit)
+                # [THESIS FIX] User-Mode Active Blocking
+                if pid:
+                    utils.terminate_process(pid, name)
 
             # ── BYOVD ─────────────────────────────────────────────────────────
             if exe_path.lower().endswith(".sys"):

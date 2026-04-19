@@ -65,13 +65,28 @@ class BaselineEngine:
         0.0 = fully trusted (in baseline)
         1.0 = completely unknown (raises ML confidence threshold)
         """
-        if not self._profiles:
-            return 0.0            # No profile = no penalty
+        if not sha256:
+            return 0.0
+
+        # Check in-memory cache first
         entry = self._profiles.get(sha256)
-        if entry is None:
-            return 1.0            # Never seen before → maximum suspicion
-        seen = entry.get("seen_count", 0)
-        return max(0.0, 1.0 - (seen / 10.0))   # Tapers off after 10 sightings
+        if entry is not None:
+            seen = entry.get("seen_count", 0)
+            return max(0.0, 1.0 - (seen / 10.0))
+
+        # Fall back to DB (handles post-flush entries)
+        try:
+            with sqlite3.connect(utils.DB_FILE) as conn:
+                row = conn.execute(
+                    "SELECT seen_count FROM baseline_profiles WHERE sha256=?",
+                    (sha256,)
+                ).fetchone()
+            if row is None:
+                return 1.0 if self._profiles else 0.0
+            seen = row[0]
+            return max(0.0, 1.0 - (seen / 10.0))
+        except Exception:
+            return 0.5
 
     def is_learning(self) -> bool:
         """Returns True if baseline learning mode is currently active."""

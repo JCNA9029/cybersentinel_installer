@@ -132,7 +132,7 @@ ATTACK_CHAINS = [
     },
     {
         "name":        "Persistence Install",
-        "events":      ["LOLBIN_ABUSE", "LOLBIN_ABUSE"],
+        "events":  ["LOLBIN_ABUSE", "LOLBIN_ABUSE", "LOLBIN_ABUSE"],
         "mitre":       "T1547 — Boot/Logon Autostart",
         "mitre_url":   "https://attack.mitre.org/techniques/T1547/",
         "severity":    "HIGH",
@@ -471,7 +471,9 @@ class ChainCorrelator:
             try:
                 resp = requests.post(_url, json=payload, timeout=5)
                 if resp.status_code not in (200, 204):
-                    print(f"[-] Chain webhook: unexpected HTTP {resp.status_code} ({_url})")
+                    # Suppress 404 from GUI console — invalid/expired webhook URL is a config issue
+                    if resp.status_code != 404:
+                        print(f"[-] Chain webhook: unexpected HTTP {resp.status_code} ({_url})")
             except requests.exceptions.ConnectionError:
                 print(f"[-] Chain webhook: connection refused ({_url})")
             except requests.exceptions.Timeout:

@@ -424,6 +424,7 @@ if __name__ == "__main__":
     parser.add_argument("--dashboard", action="store_true", help="Launch SOC dashboard.")
     parser.add_argument("--evaluate",  action="store_true", help="Run evaluation harness.")
     parser.add_argument("--update-intel", action="store_true", help="Update all threat intel feeds and exit.")
+    parser.add_argument("--scan", metavar="FILE", help="Scan a single file directly (used by right-click context menu).")
     args = parser.parse_args()
 
     if args.update_intel:
@@ -458,6 +459,15 @@ if __name__ == "__main__":
     elif args.evaluate:
         import subprocess, sys
         subprocess.run([sys.executable, "eval_harness.py"])
+
+    elif args.scan:
+        if not os.path.isfile(args.scan):
+            print(f'[-] File not found: {args.scan}')
+        else:
+            ui = CyberSentinelUI()
+            ui.setup_api()
+            ui.logic.scan_file(args.scan)
+            input('Press Enter to exit...')
 
     else:
         CyberSentinelUI().run()

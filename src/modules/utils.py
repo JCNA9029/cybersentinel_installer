@@ -398,7 +398,8 @@ def init_db():
                     filename  TEXT,
                     verdict   TEXT,
                     timestamp TEXT,
-                    apis      TEXT
+                    apis      TEXT,
+                    ai_report TEXT
                 )
             """)
             # Analyst feedback table — powers the learning loop
@@ -611,6 +612,19 @@ def save_cached_result(
     except sqlite3.Error:
         pass
 
+def save_ai_report(sha256: str, report: str):
+    """Saves the generated AI report to the scan_cache table."""
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            # Auto-migrate for existing installations
+            cols = {r[1] for r in conn.execute("PRAGMA table_info(scan_cache)").fetchall()}
+            if "ai_report" not in cols:
+                conn.execute("ALTER TABLE scan_cache ADD COLUMN ai_report TEXT")
+            
+            conn.execute("UPDATE scan_cache SET ai_report = ? WHERE sha256 = ?", (report, sha256))
+    except sqlite3.Error as e:
+        print(f"[-] Cache Write Error: {e}")
+
 def get_cached_result(sha256: str) -> Optional[dict]:
     """
     Retrieves a cached scan verdict with full forensic context including
@@ -618,8 +632,13 @@ def get_cached_result(sha256: str) -> Optional[dict]:
     """
     try:
         with sqlite3.connect(DB_FILE) as conn:
+            # Check if ai_report column exists
+            cols = {r[1] for r in conn.execute("PRAGMA table_info(scan_cache)").fetchall()}
+            if "ai_report" not in cols:
+                conn.execute("ALTER TABLE scan_cache ADD COLUMN ai_report TEXT")
+            
             row = conn.execute(
-                "SELECT verdict, filename, timestamp, apis FROM scan_cache WHERE sha256 = ?",
+                "SELECT verdict, filename, timestamp, apis, ai_report FROM scan_cache WHERE sha256 = ?",
                 (sha256,)
             ).fetchone()
             if row:
@@ -632,6 +651,7 @@ def get_cached_result(sha256: str) -> Optional[dict]:
                     "source":        row[1],
                     "timestamp":     row[2],
                     "detected_apis": apis,
+                    "ai_report":     row[4],
                 }
     except sqlite3.Error as e:
         print(f"[-] Cache Read Error: {e}")
@@ -648,18 +668,18 @@ def get_all_cached_results() -> list:
     except sqlite3.Error:
         return []
 
-def is_excluded(file_path: str, cmdline: str = "") -> bool:
+def is_excluded(file_path: str, cmdline: str = "", file_hash: str = "") -> bool:
     """
-    Checks whether the target path matches any administrator-defined allowlist entry.
+    Checks whether the target path, cmdline, or hash matches any administrator-defined allowlist entry.
     Auto-creates an exclusions.txt template on first run.
     """
-    exclusion_file = "exclusions.txt"
+    exclusion_file = str(_INSTALL_DIR / "exclusions.txt")
 
     if not os.path.exists(exclusion_file):
         try:
             with open(exclusion_file, "w") as f:
                 f.write("# CyberSentinel Enterprise Exclusion List\n")
-                f.write("# Add directory or file paths below to bypass scanning.\n")
+                f.write("# Add directory, file paths, or SHA256 hashes below to bypass scanning.\n")
                 f.write("# Example: C:\\Program Files\\MySafeCompany\\\n")
         except Exception:
             pass
@@ -668,15 +688,23 @@ def is_excluded(file_path: str, cmdline: str = "") -> bool:
     try:
         with open(exclusion_file, "r") as f:
             exclusions = [
-                line.strip().lower()
+                line.split("#")[0].strip().lower()
                 for line in f
-                if line.strip() and not line.startswith("#")
+                if line.split("#")[0].strip()
             ]
-        target_path = file_path.lower()
+        target_path = file_path.lower() if file_path else ""
         target_cmd = cmdline.lower() if cmdline else ""
-        # [THESIS FIX] Check if the exclusion string matches either the path or the command line.
-        # This addresses the "Limited Customization Options" feedback (24%) by allowing per-rule command line suppressions.
-        return any(exc in target_path or (target_cmd and exc in target_cmd) for exc in exclusions)
+        target_hash = file_hash.lower() if file_hash else ""
+        
+        for exc in exclusions:
+            if target_hash and exc == target_hash:
+                return True
+            if target_path and exc in target_path:
+                return True
+            if target_cmd and exc in target_cmd:
+                return True
+                
+        return False
     except Exception:
         return False
 
