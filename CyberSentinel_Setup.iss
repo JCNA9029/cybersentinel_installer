@@ -175,15 +175,10 @@ Filename: "schtasks.exe"; \
   Tasks: startonboot
 
 ; ── Launch GUI after install ─────────────────────────────────
-; FIX: replaced runasoriginaluser with shellexec.
-; runasoriginaluser calls IShellDispatch2 to de-elevate, which returns
-; ERROR_ACCESS_DENIED (code 5) on many Windows 10/11 configurations.
-; shellexec hands the launch to the shell with appropriate privileges instead.
-Filename: "{reg:HKLM\SOFTWARE\{#MyAppName},PythonwExe|pythonw.exe}"; \
-  Parameters: """{app}\gui.py"""; \
-  WorkingDir: "{app}"; \
-  Description: "Launch CyberSentinel GUI now"; \
-  Flags: nowait postinstall skipifsilent shellexec
+; Moved to CurStepChanged(ssDone) in [Code] via Exec() to avoid both
+; runasoriginaluser (IShellDispatch2 → code 5) and shellexec
+; (ShellExecuteEx → code 5 under strict UAC / AppLocker policies).
+; Exec() calls CreateProcess directly and cannot be blocked this way.
 
 [UninstallRun]
 Filename: "schtasks.exe"; Parameters: "/Delete /F /TN ""CyberSentinel\OllamaServer"""; Flags: runhidden waituntilterminated
@@ -521,6 +516,49 @@ begin
   end;
 end;
 
+// ── Launch GUI after installation completes ───────────────────
+// FIX: Previously in [Run] with postinstall+shellexec, which triggers
+// ShellExecuteEx code 5 under strict UAC / AppLocker / GP policies.
+// Exec() calls CreateProcess directly — no ShellExecuteEx involved —
+// so it cannot be blocked by the same mechanisms.
+//
+// PythonExePath is the global set (and verified) during PrepareToInstall.
+// It is the same path used for every pip/thrember/ollama [Run] step,
+// so if those steps succeeded, this path is guaranteed correct.
+//
+// We prefer pythonw.exe (no console window) but fall back to python.exe
+// if pythonw.exe is absent (unusual, but possible in custom installs).
+procedure LaunchGUIAfterInstall;
+var
+  PythonwExe: String;
+  ResultCode: Integer;
+begin
+  if PythonExePath = '' then begin
+    Log('LaunchGUIAfterInstall: PythonExePath is empty, skipping GUI launch.');
+    Exit;
+  end;
+
+  PythonwExe := ExtractFilePath(PythonExePath) + 'pythonw.exe';
+
+  if (ExtractFilePath(PythonExePath) <> '') and FileExists(PythonwExe) then begin
+    Log('LaunchGUIAfterInstall: launching via pythonw.exe -> ' + PythonwExe);
+    Exec(PythonwExe,
+         '"' + ExpandConstant('{app}\gui.py') + '"',
+         ExpandConstant('{app}'),
+         SW_SHOW, ewNoWait, ResultCode);
+  end else begin
+    // pythonw.exe not found — fall back to python.exe (shows a console window)
+    Log('LaunchGUIAfterInstall: pythonw.exe not found, falling back to python.exe');
+    Exec(PythonExePath,
+         '"' + ExpandConstant('{app}\gui.py') + '"',
+         ExpandConstant('{app}'),
+         SW_SHOW, ewNoWait, ResultCode);
+  end;
+
+  if ResultCode <> 0 then
+    Log('LaunchGUIAfterInstall: Exec returned code ' + IntToStr(ResultCode));
+end;
+
 // ── Guard existing config.json on reinstall ───────────────────
 // ── Set "Run as administrator" flag on a .lnk file ───────────
 // Inno Setup has no built-in [Icons] flag for this. Instead we patch the
@@ -656,6 +694,12 @@ begin
       SetShortcutRunAsAdmin(ExpandConstant('{userdesktop}\CyberSentinel GUI.lnk'));
     if IsTaskSelected('startmenuicon') then
       SetShortcutRunAsAdmin(ExpandConstant('{group}\CyberSentinel GUI.lnk'));
+
+    // ── Auto-launch GUI via Exec() — avoids ShellExecuteEx code 5 ────────
+    // [Run] postinstall with shellexec/runasoriginaluser both fail with
+    // ERROR_ACCESS_DENIED on restricted systems even when running as admin.
+    // Exec() calls CreateProcess directly and is not subject to those checks.
+    LaunchGUIAfterInstall;
   end;
 end;
 
