@@ -336,8 +336,24 @@ def run_export(
                 print(f"  [!] HEC push failed for {table} — state not advanced, will retry next run.")
                 success = False
 
-        if mode in ("file", "both") and success:
-            _write_jsonl(events, output_file)
+        if mode in ("file", "both", "all_formats") and success:
+            base_dir = os.path.join("exports", "SIEM")
+            os.makedirs(base_dir, exist_ok=True)
+            
+            # Decide which formats to save
+            if mode == "all_formats":
+                formats = ["json", "jsonl"]
+            else:
+                formats = ["json" if output_file.endswith(".json") else "jsonl"]
+            
+            for fmt in formats:
+                target_dir = os.path.join(base_dir, fmt)
+                os.makedirs(target_dir, exist_ok=True)
+                
+                # Strip extension and re-apply current format
+                base_name = os.path.splitext(os.path.basename(output_file))[0]
+                final_path = os.path.join(target_dir, f"{base_name}.{fmt}")
+                _write_jsonl(events, final_path)
 
         if success:
             # Advance the high-water mark to the newest exported timestamp
@@ -372,8 +388,8 @@ def main():
         description="CyberSentinel SIEM exporter — push detections to Splunk or JSON Lines."
     )
     parser.add_argument(
-        "--mode", choices=["hec", "file", "both"], default="file",
-        help="Export mode: hec (Splunk HEC push), file (JSON Lines), or both. Default: file.",
+        "--mode", choices=["hec", "file", "both", "all_formats"], default="file",
+        help="Export mode: hec (Splunk HEC), file (JSON Lines), both (HEC + File), or all_formats (json + jsonl files). Default: file.",
     )
     parser.add_argument("--hec-url",   default="", help="Splunk HEC endpoint, e.g. https://splunk:8088")
     parser.add_argument("--hec-token", default="", help="Splunk HEC token")
