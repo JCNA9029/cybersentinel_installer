@@ -94,6 +94,7 @@ PYTHON_DEPS = [
     "shap>=0.44.0",
     "ollama>=0.1.0",
     "flask>=3.0.0",
+    "yara-python>=3.11.0",
     "PyQt6>=6.6.0",
     "pywin32",
     "wmi",
@@ -659,6 +660,99 @@ def step_configure():
         json.dump(cfg, f, indent=2)
 
     log("config.json updated: llm_model = cybersentinel-analyst")
+
+    # ── ETW: enable Security log Event ID 4688 (Process Creation) ────────────
+    # Required for daemon_monitor.py's ETW thread to catch sub-100ms LOLBins.
+    # Step A: turn on process creation auditing in the Security log.
+    log("Enabling Process Creation auditing (auditpol)...")
+    r1 = subprocess.run(
+        ["auditpol", "/set", "/subcategory:Process Creation", "/success:enable"],
+        capture_output=True, text=True
+    )
+    if r1.returncode == 0:
+        log("Process Creation auditing enabled.")
+    else:
+        log(f"WARNING: auditpol failed (exit {r1.returncode}): {r1.stdout} {r1.stderr}", "WARN")
+        (INSTALL_DIR / "etw_config_failed.flag").write_text(
+            f"auditpol /set failed (exit {r1.returncode}).
+"
+            f"ETW process creation auditing was not enabled.
+"
+            f"To fix manually, run as Administrator:
+"
+            f'  auditpol /set /subcategory:"Process Creation" /success:enable
+'
+            f"Output:
+{r1.stdout}{r1.stderr}",
+            encoding="utf-8"
+        )
+
+    # Step B: include the full command line in each 4688 event.
+    # Without this, StringInserts[8] is empty and LoLBin/AMSI patterns have
+    # nothing to match against even though the event fires.
+    log("Enabling command-line capture in process creation events (registry)...")
+    r2 = subprocess.run(
+        [
+            "reg", "add",
+            r"HKLM\Software\Microsoft\Windows\CurrentVersion\Policies\System\Audit",
+            "/v", "ProcessCreationIncludeCmdLine_Enabled",
+            "/t", "REG_DWORD", "/d", "1", "/f",
+        ],
+        capture_output=True, text=True
+    )
+    if r2.returncode == 0:
+        log("Command-line capture in Event 4688 enabled.")
+    else:
+        log(f"WARNING: reg add (cmdline capture) failed (exit {r2.returncode}): {r2.stdout} {r2.stderr}", "WARN")
+        (INSTALL_DIR / "etw_config_failed.flag").write_text(
+            f"reg add (command-line capture) failed (exit {r2.returncode}).
+"
+            f"Event 4688 will fire but the command-line field will be empty.
+"
+            f"To fix manually, run as Administrator:
+"
+            f'  reg add "HKLM\\Software\\Microsoft\\Windows\\CurrentVersion\\Policies\\System\\Audit" '
+            f"/v ProcessCreationIncludeCmdLine_Enabled /t REG_DWORD /d 1 /f
+"
+            f"Output:
+{r2.stdout}{r2.stderr}",
+            encoding="utf-8"
+        )
+
+    # ── PowerShell ScriptBlock Logging (Event ID 4104) ────────────────────────
+    # Required for amsi_monitor.py to detect obfuscated PowerShell execution.
+    # Off by default on all Windows editions; must be set via policy registry key.
+    log("Enabling PowerShell ScriptBlock logging (Event ID 4104)...")
+    r3 = subprocess.run(
+        [
+            "reg", "add",
+            r"HKLM\Software\Policies\Microsoft\Windows\PowerShell\ScriptBlockLogging",
+            "/v", "EnableScriptBlockLogging",
+            "/t", "REG_DWORD", "/d", "1", "/f",
+        ],
+        capture_output=True, text=True
+    )
+    if r3.returncode == 0:
+        log("PowerShell ScriptBlock logging enabled.")
+    else:
+        log(f"WARNING: reg add (ScriptBlock logging) failed (exit {r3.returncode}): {r3.stdout} {r3.stderr}", "WARN")
+        (INSTALL_DIR / "scriptblock_config_failed.flag").write_text(
+            f"reg add (ScriptBlock logging) failed (exit {r3.returncode}).
+"
+            f"PowerShell Event ID 4104 will not be generated.
+"
+            f"The AMSI monitor will not detect obfuscated PowerShell execution.
+"
+            f"To fix manually, run as Administrator:
+"
+            f'  reg add "HKLM\\Software\\Policies\\Microsoft\\Windows\\PowerShell\\ScriptBlockLogging" '
+            f"/v EnableScriptBlockLogging /t REG_DWORD /d 1 /f
+"
+            f"Output:
+{r3.stdout}{r3.stderr}",
+            encoding="utf-8"
+        )
+
     log("Configuration complete.")
 
 

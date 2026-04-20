@@ -43,6 +43,11 @@ _TRUSTED_SYSTEM_PARENTS = frozenset({
     "trustedinstaller.exe", "taskeng.exe", "taskhost.exe", "taskhostw.exe",
     "wmiprvse.exe", "tiworker.exe", "msiexec.exe", "searchindexer.exe",
     "sppsvc.exe", "wuauclt.exe", "usoclient.exe",
+    # Add these:
+    "python.exe", "python3.exe",   # CyberSentinel itself
+    "cmd.exe",                      # Admin terminal sessions
+    "conhost.exe",                  # Console host
+    "vscode.exe", "code.exe",       # VS Code extensions
 })
 
 class ThreatHandler(FileSystemEventHandler):
@@ -202,11 +207,15 @@ def _monitor_processes_etw(lolbas: LolbasDetector, lolbin, fileless: FilelessMon
                 # Guard against trusted system parents — same logic as WMI path.
                 if name in _SCRIPT_HOSTS and cmdline:
                     if parent_name.lower() not in _TRUSTED_SYSTEM_PARENTS:
-                        fileless.scan_script(
-                            cmdline,
-                            source_name=f"ETW:{name}",
-                            pid=pid,
-                        )
+                        # Import the module-level compiled patterns directly
+                        from .amsi_hook import _COMPILED_PATTERNS
+                        _hits = sum(1 for pat, _ in _COMPILED_PATTERNS if pat.search(cmdline))
+                        if _hits >= 2:
+                            fileless.scan_script(
+                                cmdline,
+                                source_name=f"ETW:{name}",
+                                pid=pid,
+                            )
 
         except Exception as _etw_err:
             print(f"[ETW] loop error: {_etw_err}")
@@ -404,6 +413,14 @@ def start_daemon(target_dir: str, webhook_url: str = "", webhooks: dict | None =
         print(f"\n[-] CRITICAL: Folder '{target_dir}' does not exist.")
         time.sleep(5)
         return
+    
+    try:
+        with sqlite3.connect(utils.DB_FILE) as conn:
+            conn.execute("DELETE FROM event_timeline")
+            conn.execute("DELETE FROM chain_alerts")
+        print("[*] Event timeline cleared — fresh session started.")
+    except Exception:
+        pass
 
     logic = ScannerLogic()
     logic.headless_mode = True
@@ -411,8 +428,8 @@ def start_daemon(target_dir: str, webhook_url: str = "", webhooks: dict | None =
     lolbas     = LolbasDetector(webhook_url=webhook_url)
     byovd      = ByovdDetector()
     feodo      = FeodoMonitor(auto_isolate_cb=_isolate_network)
-    dga        = DgaMonitor()
-    ja3        = Ja3Monitor()
+    dga        = DgaMonitor(auto_isolate_cb=_isolate_network)
+    ja3        = Ja3Monitor(auto_isolate_cb=_isolate_network)
     correlator = ChainCorrelator(webhook_url=webhook_url, webhooks=webhooks or {})
     baseline   = BaselineEngine()
     amsi       = AmsiMonitor()

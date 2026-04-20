@@ -7,6 +7,7 @@ import urllib.parse
 import requests
 from . import utils
 from . import colors
+import threading
 
 WINDOW_MINUTES    = 10  # correlation look-back (chain matching)
 RETENTION_MINUTES = 60  # how long events stay in event_timeline for the GUI Live Feed
@@ -146,9 +147,20 @@ class ChainCorrelator:
     def __init__(self, webhook_url: str = "", webhooks: dict | None = None):
         self._webhook_url = webhook_url
         self._webhooks    = webhooks or {}
+        self._lock        = threading.Lock()
+        self._fired: set[str] = set()
 
     def run_correlation(self) -> list[dict]:
         """Pull recent events and match against all chain definitions."""
+        # Prevent simultaneous calls from firing duplicate alerts
+        if not self._lock.acquire(blocking=False):
+            return []
+        try:
+            return self._run_correlation_inner()
+        finally:
+            self._lock.release()
+
+    def _run_correlation_inner(self) -> list[dict]:
         events = self._fetch_recent()
         if not events:
             return []
@@ -156,18 +168,15 @@ class ChainCorrelator:
         seq       = [e["event_type"] for e in events]
         triggered = []
 
-        window_start = events[0]["timestamp"] if events else ""
         for chain in ATTACK_CHAINS:
             if not self._sequence_present(seq, chain["events"]):
                 continue
 
             matched_events = self._extract_matched_events(events, chain["events"])
+            first_ts = matched_events[0]["timestamp"] if matched_events else ""
 
-            # Dedup key includes the timestamp of the first matched event so
-            # two separate incidents triggering the same chain don't suppress
-            # each other — only identical event sequences are deduplicated.
-            first_ts = matched_events[0]["timestamp"] if matched_events else window_start
-            if self._already_alerted(f"{chain['name']}_{first_ts}"):
+            # Use new signature — chain_name and first_ts separately
+            if self._already_alerted(chain["name"], first_ts):
                 continue
 
             alert_id = str(uuid.uuid4())[:8].upper()
@@ -179,10 +188,15 @@ class ChainCorrelator:
                 "mitre_url":      chain.get("mitre_url", ""),
                 "severity":       chain["severity"],
                 "description":    chain["description"],
-                "window_start":   window_start,
+                "window_start":   first_ts,
                 "matched_events": matched_events,
             }
             self._persist(finding)
+
+            # Register immediately after persist — blocks all future calls
+            # for this chain+timestamp regardless of thread or call source
+            self._fired.add(f"{chain['name']}|{first_ts}")
+
             self._print_alert(finding)
             if self._webhook_url or self._webhooks.get("webhook_chains"):
                 self._fire_webhook(finding)
@@ -191,20 +205,30 @@ class ChainCorrelator:
         self._prune_old_events()
         return triggered
 
-    def _already_alerted(self, key: str) -> bool:
-        """Dedup check keyed on chain_name + first matched event timestamp.
-        Uses rsplit so chain names containing underscores are handled correctly."""
-        chain_name, first_ts = key.rsplit("_", 1)
+    def _already_alerted(self, chain_name: str, first_ts: str) -> bool:
+        """
+        Returns True if this exact chain+timestamp combo already fired
+        this session (in-memory) OR in the database (cross-session).
+        Prevents re-triggering without losing historical records.
+        """
+        session_key = f"{chain_name}|{first_ts}"
+        if session_key in self._fired:
+            return True
+
+        # Also check DB so restarts don't re-fire chains from the same event window
         try:
             with sqlite3.connect(utils.DB_FILE) as conn:
                 row = conn.execute(
-                    """SELECT id FROM chain_alerts
-                       WHERE chain_name=? AND window_start=? LIMIT 1""",
+                    "SELECT id FROM chain_alerts WHERE chain_name=? AND window_start=? LIMIT 1",
                     (chain_name, first_ts)
                 ).fetchone()
-            return row is not None
+            if row:
+                self._fired.add(session_key)  # backfill into memory
+                return True
         except Exception:
-            return False
+            pass
+
+        return False
 
     # ── helpers ──────────────────────────────────────────────────────────────
 

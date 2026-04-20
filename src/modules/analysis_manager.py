@@ -266,7 +266,7 @@ class ScannerLogic:
 
         # Use the passed context-aware dss_score if available (scaled to 10),
         # otherwise fall back to the static API-based calculate_live_dss.
-        if dss_score is not None:
+        if dss_score is not None and float(dss_score) > 0.0:
             live_dss = round(float(dss_score) * 10, 1)
         else:
             live_dss = calculate_live_dss(detected_apis, file_path)
@@ -1069,10 +1069,35 @@ f"    Run: ollama create {self.llm_model} -f Modelfile"
 
                 if file_size_mb > 100.0:
                     self.log_event(f"[!] File ({file_size_mb:.2f} MB) exceeds ML limit — skipping Tier 2.")
+
+                # Compute DRS for cloud-detected threats so the AI Analyst report
+                # shows the same score as the DRS display (fixes DSS/DRS mismatch).
+                cloud_drs_score = 0.0
+                try:
+                    from .risk_scorer import get_risk_scorer
+                    _drs = get_risk_scorer().compute(
+                        sha256     = sha256,
+                        filename   = filename,
+                        verdict    = "CRITICAL RISK",
+                        base_score = 1.0,  # cloud consensus = highest confidence
+                        file_path  = file_path,
+                    )
+                    cloud_drs_score = _drs.get("dynamic_score", 0.0)
+                    self.log_event(
+                        f"[*] DYNAMIC RISK SCORE: {cloud_drs_score:.2f} / 1.00 "
+                        f"— {_drs['risk_level']}"
+                    )
+                    self.session_log.append(
+                        f"[*] DRS: {cloud_drs_score:.2f} ({_drs['risk_level']})"
+                    )
+                except Exception as _e:
+                    self.log_event(f"[-] Risk Scorer (cloud path): Non-critical error: {_e}")
+
                 # Quarantine fires for all cloud MALICIOUS verdicts regardless of file size.
                 self._prompt_quarantine(
                     file_path, sha256, cloud_context, "MALICIOUS", filename,
                     detected_apis=ml_cloud_apis,
+                    dss_score=cloud_drs_score,
                 )
                 return
             else:

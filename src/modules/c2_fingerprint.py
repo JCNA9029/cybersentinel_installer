@@ -86,10 +86,11 @@ class FeodoMonitor:
     MITRE: T1071 (Application Layer Protocol), T1095 (Non-Application Layer Protocol)
     """
 
-    def __init__(self, poll_interval: float = 5.0, webhook_url: str = "", webhooks: dict | None = None):
+    def __init__(self, poll_interval: float = 5.0, webhook_url: str = "", webhooks: dict | None = None, auto_isolate_cb=None):
         self.poll_interval   = poll_interval
         self._webhook_url    = webhook_url
         self._webhooks       = webhooks or {"webhook_url": webhook_url}
+        self._auto_isolate   = auto_isolate_cb
         self._blocklist: set[str] = load_feodo_blocklist()
         self._seen: set[tuple]    = set()
         self._running             = False
@@ -151,6 +152,12 @@ class FeodoMonitor:
             }
             self._persist(finding)
             self._print_alert(finding)
+
+            if finding["pid"]:
+                utils.terminate_process(finding["pid"], proc_name)
+            if self._auto_isolate:
+                self._auto_isolate()
+                
             if self._webhook_url or self._webhooks.get("webhook_critical"):
                 utils.route_webhook_alert(
                     self._webhooks,
@@ -211,9 +218,10 @@ class DgaMonitor:
     BURST_THRESHOLD   = 5       # N suspicious queries within WINDOW_SECS
     WINDOW_SECS       = 60
 
-    def __init__(self, webhook_url: str = "", webhooks: dict | None = None):
+    def __init__(self, webhook_url: str = "", webhooks: dict | None = None, auto_isolate_cb=None):
         self._webhook_url           = webhook_url
         self._webhooks              = webhooks or {"webhook_url": webhook_url}
+        self._auto_isolate          = auto_isolate_cb
         self._window: list[tuple]   = []   # (datetime, domain, entropy)
         self._alerted: set[str]     = set()
         self._running               = False
@@ -249,6 +257,8 @@ class DgaMonitor:
             }
             self._alerted.add(fqdn)
             self._persist(finding)
+            if self._auto_isolate:
+                self._auto_isolate("DGA Beaconing Detected", finding["domain"])
             if self._webhook_url or self._webhooks.get("webhook_high"):
                 utils.route_webhook_alert(
                     self._webhooks,
@@ -303,31 +313,43 @@ def _compute_ja3(data: bytes) -> str | None:
     Returns MD5 hex string or None if data is not a valid ClientHello.
     """
     try:
+        # Must be TLS Handshake (0x16) with ClientHello type (0x01)
         if len(data) < 43 or data[0] != 0x16 or data[5] != 0x01:
             return None
         pos = 9
-        ver  = struct.unpack("!H", data[pos:pos+2])[0]; pos += 34  # ver + random
-        pos += 1 + data[pos]                                        # session id
+        # Client version (2 bytes) + random (32 bytes) = 34 bytes
+        ver = struct.unpack("!H", data[pos:pos+2])[0]; pos += 34
+        # Session ID: 1 byte length + length bytes
+        pos += 1 + data[pos]
+        # Cipher suites: 2 byte length + length bytes
         cs_len = struct.unpack("!H", data[pos:pos+2])[0]; pos += 2
         ciphers = [struct.unpack("!H", data[pos+i:pos+i+2])[0]
                    for i in range(0, cs_len, 2)
-                   if struct.unpack("!H", data[pos+i:pos+i+2])[0] not in (0,0xFF)]
-        pos += cs_len + 1 + data[pos]                               # skip compression
+                   if struct.unpack("!H", data[pos+i:pos+i+2])[0] not in (0x0000, 0x00FF)]
+        pos += cs_len
+        # Compression methods: 1 byte count + count bytes  (BUG FIX: was cs_len+1+data[pos])
+        comp_count = data[pos]; pos += 1 + comp_count
+        # Extensions block
         if pos + 2 > len(data):
             return None
         ext_end = pos + 2 + struct.unpack("!H", data[pos:pos+2])[0]; pos += 2
         exts, curves, fmts = [], [], []
-        while pos + 4 <= ext_end:
+        while pos + 4 <= ext_end and pos + 4 <= len(data):
             et = struct.unpack("!H", data[pos:pos+2])[0]; pos += 2
             el = struct.unpack("!H", data[pos:pos+2])[0]; pos += 2
-            if et not in (0, 1): exts.append(et)
-            if et == 0x0A:
+            if et not in (0x0000, 0x0001):  # skip SNI and max_fragment_length
+                exts.append(et)
+            if et == 0x000A and el >= 2:    # supported_groups / elliptic_curves
                 gl = struct.unpack("!H", data[pos:pos+2])[0]
-                curves = [struct.unpack("!H", data[pos+2+i:pos+4+i])[0] for i in range(0, gl, 2)]
-            elif et == 0x0B:
-                fmts = list(data[pos+1:pos+1+data[pos]])
+                curves = [struct.unpack("!H", data[pos+2+i:pos+4+i])[0]
+                          for i in range(0, gl, 2) if pos+2+i+2 <= len(data)]
+            elif et == 0x000B and el >= 1:  # ec_point_formats
+                fmt_len = data[pos]
+                fmts = list(data[pos+1:pos+1+fmt_len])
             pos += el
-        s = f"{ver},{'-'.join(map(str,ciphers))},{'-'.join(map(str,exts))},{'-'.join(map(str,curves))},{'-'.join(map(str,fmts))}"
+        s = (f"{ver},{'-'.join(map(str,ciphers))},"
+             f"{'-'.join(map(str,exts))},{'-'.join(map(str,curves))},"
+             f"{'-'.join(map(str,fmts))}")
         return hashlib.md5(s.encode()).hexdigest()
     except Exception:
         return None
@@ -340,9 +362,10 @@ class Ja3Monitor:
     MITRE: T1071.001 (Web Protocols)
     """
 
-    def __init__(self, webhook_url: str = "", webhooks: dict | None = None):
+    def __init__(self, webhook_url: str = "", webhooks: dict | None = None, auto_isolate_cb=None):
         self._webhook_url         = webhook_url
         self._webhooks            = webhooks or {"webhook_url": webhook_url}
+        self._auto_isolate        = auto_isolate_cb
         self._blocklist: set[str] = load_ja3_blocklist()
         self._available           = self._check_scapy()
         self._running             = False
@@ -382,6 +405,8 @@ class Ja3Monitor:
                     return
                 if pkt.haslayer(TCP) and pkt.haslayer(Raw):
                     ja3 = _compute_ja3(bytes(pkt[Raw].load))
+                    if ja3:
+                        print(f"[DEBUG-JA3] computed={ja3} blocklist_hit={ja3 in self._blocklist}")
                     if ja3 and ja3 in self._blocklist:
                         src = pkt[IP].src if pkt.haslayer(IP) else "?"
                         dst = pkt[IP].dst if pkt.haslayer(IP) else "?"
@@ -403,6 +428,8 @@ class Ja3Monitor:
                                 )
                         except Exception:
                             pass
+                        if self._auto_isolate:
+                            self._auto_isolate("Malicious JA3 TLS Fingerprint", ja3)
                         if self._webhook_url or self._webhooks.get("webhook_high"):
                             utils.route_webhook_alert(
                                 self._webhooks,
@@ -415,7 +442,10 @@ class Ja3Monitor:
                                     "Severity": "HIGH",
                                 },
                             )
+            ifaces = [i for i in get_if_list()
+                      if "Loopback" not in i and "lo" not in i.lower()]
             sniff(filter="tcp port 443 or tcp port 8443", prn=cb, store=False,
+                  iface=ifaces,
                   stop_filter=lambda _: not self._running)
         except Exception as e:
             print(f"[-] JA3 capture error: {e}")

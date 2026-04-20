@@ -582,6 +582,8 @@ def table_item(text: str, color: str = None) -> QTableWidgetItem:
 # ══════════════════════════════════════════════════════════════════════════════
 
 class CyberSentinelGUI(QMainWindow):
+    # Emitted from background C2 monitor threads to trigger GUI-thread isolation
+    c2_isolated = pyqtSignal(str, str)  # (detection_type, indicator)
 
     # Signal used to safely run a callable on the Qt main thread
     _run_on_main_signal = pyqtSignal(object)
@@ -623,9 +625,18 @@ class CyberSentinelGUI(QMainWindow):
             self.amsi_scanner = AmsiScanner()
             _wh  = self.logic.webhook_url
             _whs = self.logic._webhooks()
-            self.feodo        = FeodoMonitor(webhook_url=_wh, webhooks=_whs)
-            self.dga          = DgaMonitor(webhook_url=_wh,  webhooks=_whs)
-            self.ja3          = Ja3Monitor(webhook_url=_wh,  webhooks=_whs)
+            # Auto-isolation callback — called from background monitor threads.
+            # Uses a Qt signal to marshal the isolation action to the GUI thread.
+            def _c2_auto_isolate(detection_type: str, indicator: str):
+                self.c2_isolated.emit(detection_type, indicator)
+
+            self.c2_isolated.connect(self._on_c2_auto_isolate)
+            self.feodo        = FeodoMonitor(webhook_url=_wh, webhooks=_whs,
+                                            auto_isolate_cb=_c2_auto_isolate)
+            self.dga          = DgaMonitor(webhook_url=_wh,  webhooks=_whs,
+                                           auto_isolate_cb=_c2_auto_isolate)
+            self.ja3          = Ja3Monitor(webhook_url=_wh,  webhooks=_whs,
+                                           auto_isolate_cb=_c2_auto_isolate)
             
             # Start lightweight network monitors (Feodo IP check + JA3 TLS sniffer +
             # DGA DNS sniffer) only when the GUI is used standalone — i.e. without the
@@ -2781,11 +2792,11 @@ class CyberSentinelGUI(QMainWindow):
                 pid      = str(r.get("pid", "—"))
                 ts       = r.get("timestamp", "")
 
-                # Parse findings JSON into a readable one-liner
+                # Parse findings JSON into a readable multi-line string
                 try:
                     parsed = json.loads(findings)
                     if isinstance(parsed, list):
-                        findings_text = " | ".join(
+                        findings_text = "\n".join(
                             f"{f.get('mitre','?')} — {f.get('indicator', f.get('desc','?'))}"
                             for f in parsed
                         )
@@ -2794,16 +2805,24 @@ class CyberSentinelGUI(QMainWindow):
                 except Exception:
                     findings_text = findings
 
-                # Colour: LOLBin rows in orange, AMSI rows in yellow
-                is_lolbin = "LOLBIN" in source.upper()
+                is_lolbin  = "LOLBIN" in source.upper()
                 text_color = THEME["orange"] if is_lolbin else THEME["yellow"]
 
                 row = t.rowCount(); t.insertRow(row)
                 t.setItem(row, 0, table_item(ts))
                 t.setItem(row, 1, table_item(source, text_color))
                 t.setItem(row, 2, table_item(pid))
-                t.setItem(row, 3, table_item(findings_text, text_color))
-            t.resizeRowsToContents()
+
+                # Findings cell — word wrap + tooltip for full text
+                findings_item = QTableWidgetItem(findings_text)
+                findings_item.setForeground(QColor(text_color))
+                findings_item.setToolTip(findings_text)
+                t.setItem(row, 3, findings_item)
+
+                # Set minimum row height so wrapped text is visible
+                t.setRowHeight(row, max(40 * findings_text.count("\n") + 40, 48))
+
+        t.resizeRowsToContents()
 
     # ── PAGE: AMSI HOOK ───────────────────────────────────────────────────────
 
@@ -3354,6 +3373,35 @@ class CyberSentinelGUI(QMainWindow):
         except Exception as e:
             self._net_console.append_line(f"[-] Clear failed: {e}", THEME["red"])
 
+    def _on_c2_auto_isolate(self, detection_type: str, indicator: str):
+        """Called via Qt signal when a C2 monitor triggers auto-isolation.
+        Runs on the GUI thread — safe to call isolate_net and update UI."""
+        msg = (
+            f"⚠️  {detection_type}\n\n"
+            f"Indicator: {indicator}\n\n"
+            f"CyberSentinel is isolating this host now."
+        )
+        # Show non-blocking critical banner
+        banner = QMessageBox(self)
+        banner.setWindowTitle("🚨 C2 Detected — Host Isolated")
+        banner.setText(msg)
+        banner.setIcon(QMessageBox.Icon.Critical)
+        banner.setStandardButtons(QMessageBox.StandardButton.Ok)
+        banner.setModal(False)
+        banner.show()
+        # Run isolation without confirmation dialog
+        worker = GenericWorker(self.isolate_net)
+        if hasattr(self, "_net_console"):
+            worker.line_out.connect(self._net_console.append_line)
+        worker.finished.connect(lambda _: (
+            hasattr(self, "_net_console") and
+            self._net_console.append_line(
+                f"[!] AUTO-ISOLATED — {detection_type}: {indicator}", THEME["red"]
+            )
+        ))
+        self._workers.append(worker)
+        worker.start()
+
     def _isolate_network(self):
         reply = QMessageBox.warning(
             self, "Confirm Isolation",
@@ -3473,6 +3521,47 @@ class CyberSentinelGUI(QMainWindow):
             print(f"[!] Blocklist reload error: {e}")
 
     # ── PAGE: INTEL VIEWER ────────────────────────────────────────────────────
+
+    def _iv_add_feodo_entry(self):
+        from modules.intel_updater import add_feodo_entry
+        ip     = self._iv_feodo_ip_input.text().strip()
+        family = self._iv_feodo_family_input.text().strip() or "Custom"
+        if not ip:
+            self._iv_feodo_status_lbl.setStyleSheet("color: " + THEME['warning'] + ";") 
+            self._iv_feodo_status_lbl.setText("Enter an IP address.")
+            return
+        ok, msg = add_feodo_entry(ip, malware=family)
+        color = THEME["green"] if ok else THEME["red"]
+        self._iv_feodo_status_lbl.setStyleSheet(f"color: {color};")
+        self._iv_feodo_status_lbl.setText(msg)
+        if ok:
+            self._iv_feodo_ip_input.clear()
+            self._iv_feodo_family_input.clear()
+            # Hot-reload the in-memory blocklist
+            if hasattr(self, "feodo"):
+                from modules.intel_updater import load_feodo_blocklist
+                self.feodo._blocklist = load_feodo_blocklist()
+            self._iv_reload_feodo()
+
+    def _iv_add_ja3_entry(self):
+        from modules.intel_updater import add_ja3_entry
+        h      = self._iv_ja3_hash_input.text().strip()
+        family = self._iv_ja3_fam_input.text().strip() or "Custom"
+        if not h:
+            self._iv_ja3_status_lbl.setStyleSheet("color: " + THEME['warning'] + ";") 
+            self._iv_ja3_status_lbl.setText("Enter a JA3 hash.")
+            return
+        ok, msg = add_ja3_entry(h, family=family)
+        color = THEME["green"] if ok else THEME["red"]
+        self._iv_ja3_status_lbl.setStyleSheet(f"color: {color};")
+        self._iv_ja3_status_lbl.setText(msg)
+        if ok:
+            self._iv_ja3_hash_input.clear()
+            self._iv_ja3_fam_input.clear()
+            # Hot-reload the in-memory blocklist
+            if hasattr(self, "ja3"):
+                self.ja3.reload_blocklist()
+            self._iv_reload_ja3()
 
     def _build_intel_viewer_page(self):
         """
@@ -3656,6 +3745,27 @@ class CyberSentinelGUI(QMainWindow):
         vl.addWidget(self._iv_feodo_table, 1)
 
         self._iv_feodo_rows: list[dict] = []
+
+        # ── Add custom Feodo entry ──
+        add_row = QHBoxLayout()
+        self._iv_feodo_ip_input = QLineEdit()
+        self._iv_feodo_ip_input.setPlaceholderText("IP address (e.g. 192.168.1.1)")
+        self._iv_feodo_ip_input.setMaximumWidth(220)
+        self._iv_feodo_family_input = QLineEdit()
+        self._iv_feodo_family_input.setPlaceholderText("Malware family (optional)")
+        self._iv_feodo_family_input.setMaximumWidth(180)
+        add_feodo_btn = QPushButton("+ Add IP")
+        add_feodo_btn.setFixedWidth(90)
+        add_feodo_btn.clicked.connect(self._iv_add_feodo_entry)
+        self._iv_feodo_status_lbl = QLabel("")
+        self._iv_feodo_status_lbl.setStyleSheet(f"color: {THEME['muted']};")
+        add_row.addWidget(QLabel("Add:"))
+        add_row.addWidget(self._iv_feodo_ip_input)
+        add_row.addWidget(self._iv_feodo_family_input)
+        add_row.addWidget(add_feodo_btn)
+        add_row.addWidget(self._iv_feodo_status_lbl, 1)
+        vl.addLayout(add_row)
+
         return w
 
     # ── JA3 tab ──────────────────────────────────────────────────────────────
@@ -3686,6 +3796,27 @@ class CyberSentinelGUI(QMainWindow):
         vl.addWidget(self._iv_ja3_table, 1)
 
         self._iv_ja3_rows: list[tuple] = []
+
+        # ── Add custom JA3 entry ──
+        add_row2 = QHBoxLayout()
+        self._iv_ja3_hash_input = QLineEdit()
+        self._iv_ja3_hash_input.setPlaceholderText("JA3 MD5 hash (32 hex chars)")
+        self._iv_ja3_hash_input.setMaximumWidth(280)
+        self._iv_ja3_fam_input = QLineEdit()
+        self._iv_ja3_fam_input.setPlaceholderText("Malware family (optional)")
+        self._iv_ja3_fam_input.setMaximumWidth(180)
+        add_ja3_btn = QPushButton("+ Add Hash")
+        add_ja3_btn.setFixedWidth(100)
+        add_ja3_btn.clicked.connect(self._iv_add_ja3_entry)
+        self._iv_ja3_status_lbl = QLabel("")
+        self._iv_ja3_status_lbl.setStyleSheet(f"color: {THEME['muted']};")
+        add_row2.addWidget(QLabel("Add:"))
+        add_row2.addWidget(self._iv_ja3_hash_input)
+        add_row2.addWidget(self._iv_ja3_fam_input)
+        add_row2.addWidget(add_ja3_btn)
+        add_row2.addWidget(self._iv_ja3_status_lbl, 1)
+        vl.addLayout(add_row2)
+
         return w
 
     # ── LOLDrivers tab ───────────────────────────────────────────────────────

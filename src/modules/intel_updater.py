@@ -115,8 +115,53 @@ def update_feed(feed_name: str, force: bool = False) -> bool:
                 print(f"[-] {feed_name}: No data lines in CSV response — rejecting update.")
                 return False
 
+        # Preserve user-added custom entries before overwriting the file.
+        custom_feodo: list[dict] = []
+        custom_ja3:   list[str]  = []
+        if feed_name == "feodo" and os.path.exists(dest):
+            try:
+                existing = json.loads(open(dest).read())
+                custom_feodo = [e for e in existing if e.get("_custom")]
+            except Exception:
+                pass
+        elif feed_name == "ja3" and os.path.exists(dest):
+            try:
+                for line in open(dest).read().splitlines():
+                    if line.startswith("#_custom:") or (",_custom," in line):
+                        custom_ja3.append(line)
+            except Exception:
+                pass
+
         with open(dest, "wb") as f:
             f.write(resp.content)
+
+        # Re-inject custom entries, skipping any that now exist in the feed.
+        if feed_name == "feodo" and custom_feodo:
+            try:
+                fresh = json.loads(open(dest).read())
+                existing_ips = {e.get("ip_address") for e in fresh}
+                merged = fresh + [e for e in custom_feodo
+                                  if e.get("ip_address") not in existing_ips]
+                with open(dest, "w") as f:
+                    json.dump(merged, f)
+                print(f"[*] Preserved {len(custom_feodo)} custom Feodo entries.")
+            except Exception:
+                pass
+        elif feed_name == "ja3" and custom_ja3:
+            try:
+                existing_hashes = set()
+                for line in open(dest).read().splitlines():
+                    if not line.startswith("#") and line.strip():
+                        existing_hashes.add(line.split(",")[0].strip())
+                new_lines = [l for l in custom_ja3
+                             if l.split(",")[0].strip() not in existing_hashes]
+                if new_lines:
+                    with open(dest, "a") as f:
+                        f.write("\n" + "\n".join(new_lines))
+                print(f"[*] Preserved {len(custom_ja3)} custom JA3 entries.")
+            except Exception:
+                pass
+
         meta[feed_name] = datetime.datetime.now().isoformat()
         _save_meta(meta)
         size_kb = os.path.getsize(dest) / 1024
@@ -209,3 +254,77 @@ def load_feodo_blocklist() -> set:
         return {entry.get("ip_address", "") for entry in data if entry.get("ip_address")}
     except Exception:
         return set()
+
+
+import re as _re
+
+def add_feodo_entry(ip: str, malware: str = "Custom", status: str = "online") -> tuple[bool, str]:
+    """
+    Adds a custom IP entry to the Feodo blocklist.
+    Returns (success, message).
+    """
+    _ensure_intel_dir()
+    ip = ip.strip()
+    # Basic IPv4 validation
+    if not _re.fullmatch(r"\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}", ip):
+        return False, f"Invalid IP address format: {ip}"
+
+    existing: list[dict] = []
+    if os.path.exists(FEODO_PATH):
+        try:
+            existing = json.loads(open(FEODO_PATH).read())
+        except Exception:
+            existing = []
+
+    if any(e.get("ip_address") == ip for e in existing):
+        return False, f"IP already exists in Feodo blocklist: {ip}"
+
+    now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    existing.append({
+        "ip_address":  ip,
+        "port":        0,
+        "status":      status,
+        "malware":     malware,
+        "country":     "Custom",
+        "as_number":   "",
+        "as_name":     "Manually Added",
+        "first_seen":  now,
+        "last_online": now,
+        "_custom":     True,
+    })
+    try:
+        with open(FEODO_PATH, "w") as f:
+            json.dump(existing, f)
+        return True, f"Added {ip} to Feodo blocklist."
+    except Exception as e:
+        return False, f"Write error: {e}"
+
+
+def add_ja3_entry(ja3_hash: str, family: str = "Custom") -> tuple[bool, str]:
+    """
+    Adds a custom JA3 fingerprint to the JA3 blocklist.
+    Returns (success, message).
+    """
+    _ensure_intel_dir()
+    ja3_hash = ja3_hash.strip().lower()
+    if not _re.fullmatch(r"[0-9a-f]{32}", ja3_hash):
+        return False, f"Invalid JA3 hash (must be 32-char MD5 hex): {ja3_hash}"
+
+    if os.path.exists(JA3_PATH):
+        try:
+            for line in open(JA3_PATH).read().splitlines():
+                if line.startswith("#") or not line.strip():
+                    continue
+                if line.split(",")[0].strip().lower() == ja3_hash:
+                    return False, f"JA3 hash already exists in blocklist: {ja3_hash}"
+        except Exception:
+            pass
+
+    now = datetime.datetime.now().strftime("%Y-%m-%d")
+    line = f"{ja3_hash},{family},{now},{now},_custom"
+    try:
+        with open(JA3_PATH, "a") as f:
+            f.write("\n" + line)
+        return True, f"Added {ja3_hash} to JA3 blocklist."
+    except Exception as e:
+        return False, f"Write error: {e}"

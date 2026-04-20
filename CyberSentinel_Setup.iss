@@ -561,6 +561,48 @@ begin
         mbError, MB_OK
       );
     end;
+
+    // ── ETW configuration failure warning ─────────────────────────────────
+    // install_helper.py::step_configure() writes this flag when auditpol or
+    // the command-line capture registry key could not be applied.
+    // Affects: daemon ETW thread (Event 4688), LoLBin detection of short-lived
+    // processes, and AMSI script scanning from the ETW path.
+    if FileExists(ExpandConstant('{app}\etw_config_failed.flag')) then begin
+      DeleteFile(ExpandConstant('{app}\etw_config_failed.flag'));
+      MsgBox(
+        'ETW / Process Creation audit configuration failed.' + #13#10 + #13#10 +
+        'CyberSentinel has been installed, but one or more Windows audit ' +
+        'policy settings could not be applied automatically.' + #13#10 + #13#10 +
+        'This affects the daemon''s ability to detect short-lived LOLBin ' +
+        'abuse (e.g. sub-100ms certutil or mshta calls).' + #13#10 + #13#10 +
+        'To fix manually, run both commands as Administrator:' + #13#10 +
+        '  auditpol /set /subcategory:"Process Creation" /success:enable' + #13#10 +
+        '  reg add "HKLM\Software\Microsoft\Windows\CurrentVersion\Policies\System\Audit"' + #13#10 +
+        '      /v ProcessCreationIncludeCmdLine_Enabled /t REG_DWORD /d 1 /f' + #13#10 + #13#10 +
+        'See install_log.txt in C:\CyberSentinel for details.',
+        mbWarning, MB_OK
+      );
+    end;
+
+    // ── ScriptBlock logging failure warning ────────────────────────────────
+    // install_helper.py::step_configure() writes this flag when the
+    // PowerShell ScriptBlock logging registry key could not be applied.
+    // Affects: AmsiMonitor (Event ID 4104) — obfuscated PowerShell detection.
+    if FileExists(ExpandConstant('{app}\scriptblock_config_failed.flag')) then begin
+      DeleteFile(ExpandConstant('{app}\scriptblock_config_failed.flag'));
+      MsgBox(
+        'PowerShell ScriptBlock logging could not be enabled.' + #13#10 + #13#10 +
+        'CyberSentinel has been installed, but the registry key that enables ' +
+        'PowerShell Event ID 4104 could not be written.' + #13#10 + #13#10 +
+        'This means the AMSI monitor will not detect obfuscated PowerShell ' +
+        'execution until this is corrected.' + #13#10 + #13#10 +
+        'To fix manually, run as Administrator:' + #13#10 +
+        '  reg add "HKLM\Software\Policies\Microsoft\Windows\PowerShell\ScriptBlockLogging"' + #13#10 +
+        '      /v EnableScriptBlockLogging /t REG_DWORD /d 1 /f' + #13#10 + #13#10 +
+        'See install_log.txt in C:\CyberSentinel for details.',
+        mbWarning, MB_OK
+      );
+    end;
 end;
 
 

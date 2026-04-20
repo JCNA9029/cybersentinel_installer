@@ -31,9 +31,12 @@ yara-python>=3.11.0     # Custom YARA rule scanning & AI validation
 # ── Desktop GUI ───────────────────────────────────────────────
 PyQt6>=6.6.0            # Native desktop GUI (gui.py)
 
-# ── Windows-Only (install separately) ────────────────────────
-# pip install pywin32   — required for AMSI monitor and WMI daemon
-# pip install wmi       — required for Tier 0 kernel-bridge process hook
+# ── Windows-Only ──────────────────────────────────────────────
+pywin32               # required for AMSI monitor and WMI daemon
+wmi                   # required for Tier 0 kernel-bridge process hook
+
+# ── Installer Utility ─────────────────────────────────────────
+gdown                 # used by install_helper.py to download models from Google Drive
 
 # ── Optional: JA3 C2 Fingerprinting ──────────────────────────
 # Requires Npcap first: https://npcap.com/
