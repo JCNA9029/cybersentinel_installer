@@ -90,11 +90,11 @@ Source: "installer_tools\check_python.bat";    DestDir: "{app}\installer_tools";
 [Icons]
 ; Desktop shortcut
 ; {reg:...} reads the exact Python path saved during install — never picks up a wrong Python from PATH.
-Name: "{userdesktop}\CyberSentinel GUI"; Filename: "{reg:HKLM\SOFTWARE\{#MyAppName},PythonwExe|pythonw.exe}"; Parameters: """{app}\gui.py"""; WorkingDir: "{app}"; IconFilename: "{app}\assets\icon.ico"; AppUserModelID: "CyberSentinel.GUI"; Tasks: desktopicon
+Name: "{userdesktop}\CyberSentinel GUI"; Filename: "{reg:HKLM\SOFTWARE\{#MyAppName},PythonwExe|pythonw.exe}"; Parameters: """{app}\gui.py"""; WorkingDir: "{app}"; IconFilename: "{app}\assets\icon.ico"; AppUserModelID: "CyberSentinel.GUI"; Tasks: desktopicon; Flags: runasadmin
 
 ; Start Menu group
-Name: "{group}\CyberSentinel GUI";        Filename: "{reg:HKLM\SOFTWARE\{#MyAppName},PythonwExe|pythonw.exe}"; Parameters: """{app}\gui.py""";                                                                          WorkingDir: "{app}"; IconFilename: "{app}\assets\icon.ico"; Tasks: startmenuicon
-Name: "{group}\CyberSentinel GUI";        Filename: "{reg:HKLM\SOFTWARE\{#MyAppName},PythonwExe|pythonw.exe}"; Parameters: """{app}\gui.py"""; WorkingDir: "{app}"; IconFilename: "{app}\assets\icon.ico"; AppUserModelID: "CyberSentinel.GUI"; Tasks: startmenuicon
+Name: "{group}\CyberSentinel GUI";        Filename: "{reg:HKLM\SOFTWARE\{#MyAppName},PythonwExe|pythonw.exe}"; Parameters: """{app}\gui.py""";                                                                          WorkingDir: "{app}"; IconFilename: "{app}\assets\icon.ico"; Tasks: startmenuicon; Flags: runasadmin
+Name: "{group}\CyberSentinel GUI";        Filename: "{reg:HKLM\SOFTWARE\{#MyAppName},PythonwExe|pythonw.exe}"; Parameters: """{app}\gui.py"""; WorkingDir: "{app}"; IconFilename: "{app}\assets\icon.ico"; AppUserModelID: "CyberSentinel.GUI"; Tasks: startmenuicon; Flags: runasadmin
 Name: "{group}\CyberSentinel Dashboard";  Filename: "cmd.exe"; Parameters: "/k python.exe ""{app}\dashboard.py"""; WorkingDir: "{app}"; Tasks: startmenuicon
 Name: "{group}\Uninstall CyberSentinel";  Filename: "{uninstallexe}"; Tasks: startmenuicon
 
@@ -176,7 +176,7 @@ Filename: "{reg:HKLM\SOFTWARE\{#MyAppName},PythonwExe|pythonw.exe}"; \
   Parameters: """{app}\gui.py"""; \
   WorkingDir: "{app}"; \
   Description: "Launch CyberSentinel GUI now"; \
-  Flags: nowait postinstall skipifsilent
+  Flags: nowait postinstall skipifsilent runasoriginaluser
 
 [UninstallRun]
 Filename: "schtasks.exe"; Parameters: "/Delete /F /TN ""CyberSentinel\OllamaServer"""; Flags: runhidden waituntilterminated
