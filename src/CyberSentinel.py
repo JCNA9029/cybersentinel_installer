@@ -39,7 +39,8 @@ class CyberSentinelUI:
         self.ja3._webhooks            = _wh
         self.baseline     = BaselineEngine()
         self.amsi         = AmsiMonitor()
-        self.lolbin       = LolbinDetector()
+        # self.lolbin       = LolbinDetector()
+        self.lolbin       = None
         self.fileless     = FilelessMonitor(correlator=self.correlator)
         self.amsi_scanner = AmsiScanner()
         # Start background C2 monitors

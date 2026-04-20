@@ -40,7 +40,7 @@ def _ensure_intel_dir():
 def _load_meta() -> dict:
     if os.path.exists(META_PATH):
         try:
-            with open(META_PATH) as f:
+            with open(META_PATH, encoding="utf-8") as f:
                 return json.load(f)
         except Exception:
             pass
@@ -48,7 +48,7 @@ def _load_meta() -> dict:
 
 def _save_meta(meta: dict):
     try:
-        with open(META_PATH, "w") as f:
+        with open(META_PATH, "w", encoding="utf-8") as f:
             json.dump(meta, f, indent=2)
     except Exception:
         pass
@@ -120,13 +120,13 @@ def update_feed(feed_name: str, force: bool = False) -> bool:
         custom_ja3:   list[str]  = []
         if feed_name == "feodo" and os.path.exists(dest):
             try:
-                existing = json.loads(open(dest).read())
+                existing = json.loads(open(dest, encoding="utf-8").read())
                 custom_feodo = [e for e in existing if e.get("_custom")]
             except Exception:
                 pass
         elif feed_name == "ja3" and os.path.exists(dest):
             try:
-                for line in open(dest).read().splitlines():
+                for line in open(dest, encoding="utf-8").read().splitlines():
                     if line.startswith("#_custom:") or (",_custom," in line):
                         custom_ja3.append(line)
             except Exception:
@@ -138,11 +138,11 @@ def update_feed(feed_name: str, force: bool = False) -> bool:
         # Re-inject custom entries, skipping any that now exist in the feed.
         if feed_name == "feodo" and custom_feodo:
             try:
-                fresh = json.loads(open(dest).read())
+                fresh = json.loads(open(dest, encoding="utf-8").read())
                 existing_ips = {e.get("ip_address") for e in fresh}
                 merged = fresh + [e for e in custom_feodo
                                   if e.get("ip_address") not in existing_ips]
-                with open(dest, "w") as f:
+                with open(dest, "w", encoding="utf-8") as f:
                     json.dump(merged, f)
                 print(f"[*] Preserved {len(custom_feodo)} custom Feodo entries.")
             except Exception:
@@ -150,13 +150,13 @@ def update_feed(feed_name: str, force: bool = False) -> bool:
         elif feed_name == "ja3" and custom_ja3:
             try:
                 existing_hashes = set()
-                for line in open(dest).read().splitlines():
+                for line in open(dest, encoding="utf-8").read().splitlines():
                     if not line.startswith("#") and line.strip():
                         existing_hashes.add(line.split(",")[0].strip())
                 new_lines = [l for l in custom_ja3
                              if l.split(",")[0].strip() not in existing_hashes]
                 if new_lines:
-                    with open(dest, "a") as f:
+                    with open(dest, "a", encoding="utf-8") as f:
                         f.write("\n" + "\n".join(new_lines))
                 print(f"[*] Preserved {len(custom_ja3)} custom JA3 entries.")
             except Exception:
@@ -205,7 +205,7 @@ def load_lolbas() -> list:
     if not os.path.exists(LOLBAS_PATH):
         return []
     try:
-        with open(LOLBAS_PATH) as f:
+        with open(LOLBAS_PATH, encoding="utf-8") as f:
             return json.load(f)
     except Exception:
         return []
@@ -217,7 +217,7 @@ def load_loldrivers() -> list:
     if not os.path.exists(LOLDRIVERS_PATH):
         return []
     try:
-        with open(LOLDRIVERS_PATH) as f:
+        with open(LOLDRIVERS_PATH, encoding="utf-8") as f:
             return json.load(f)
     except Exception:
         return []
@@ -230,7 +230,7 @@ def load_ja3_blocklist() -> set:
         return set()
     hashes = set()
     try:
-        with open(JA3_PATH) as f:
+        with open(JA3_PATH, encoding="utf-8") as f:
             for line in f:
                 line = line.strip()
                 if line.startswith("#") or not line:
@@ -249,7 +249,7 @@ def load_feodo_blocklist() -> set:
     if not os.path.exists(FEODO_PATH):
         return set()
     try:
-        with open(FEODO_PATH) as f:
+        with open(FEODO_PATH, encoding="utf-8") as f:
             data = json.load(f)
         return {entry.get("ip_address", "") for entry in data if entry.get("ip_address")}
     except Exception:
@@ -272,7 +272,7 @@ def add_feodo_entry(ip: str, malware: str = "Custom", status: str = "online") ->
     existing: list[dict] = []
     if os.path.exists(FEODO_PATH):
         try:
-            existing = json.loads(open(FEODO_PATH).read())
+            existing = json.loads(open(FEODO_PATH, encoding="utf-8").read())
         except Exception:
             existing = []
 
@@ -293,7 +293,7 @@ def add_feodo_entry(ip: str, malware: str = "Custom", status: str = "online") ->
         "_custom":     True,
     })
     try:
-        with open(FEODO_PATH, "w") as f:
+        with open(FEODO_PATH, "w", encoding="utf-8") as f:
             json.dump(existing, f)
         return True, f"Added {ip} to Feodo blocklist."
     except Exception as e:
@@ -312,7 +312,7 @@ def add_ja3_entry(ja3_hash: str, family: str = "Custom") -> tuple[bool, str]:
 
     if os.path.exists(JA3_PATH):
         try:
-            for line in open(JA3_PATH).read().splitlines():
+            for line in open(JA3_PATH, encoding="utf-8").read().splitlines():
                 if line.startswith("#") or not line.strip():
                     continue
                 if line.split(",")[0].strip().lower() == ja3_hash:
@@ -323,7 +323,7 @@ def add_ja3_entry(ja3_hash: str, family: str = "Custom") -> tuple[bool, str]:
     now = datetime.datetime.now().strftime("%Y-%m-%d")
     line = f"{ja3_hash},{family},{now},{now},_custom"
     try:
-        with open(JA3_PATH, "a") as f:
+        with open(JA3_PATH, "a", encoding="utf-8") as f:
             f.write("\n" + line)
         return True, f"Added {ja3_hash} to JA3 blocklist."
     except Exception as e:

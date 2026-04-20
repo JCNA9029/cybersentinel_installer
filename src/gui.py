@@ -620,7 +620,7 @@ class CyberSentinelGUI(QMainWindow):
             )
             self.baseline     = BaselineEngine()
             self.amsi         = AmsiMonitor()
-            self.lolbin       = LolbinDetector(webhook_url=self.logic.webhook_url)
+            self.lolbin       = None
             self.fileless     = FilelessMonitor(correlator=self.correlator)
             self.amsi_scanner = AmsiScanner()
             _wh  = self.logic.webhook_url
@@ -1127,7 +1127,43 @@ class CyberSentinelGUI(QMainWindow):
         except OSError:
             return False
 
+    # ── TRUSTED PARENTS HELPERS ──────────────────────────────────────────────
+
+    def _load_trusted_parents(self) -> list[str]:
+        """Reads trusted_parents.txt and returns non-comment, non-empty lines."""
+        tp_path = os.path.join(BASE_DIR, "trusted_parents.txt")
+        if not os.path.isfile(tp_path):
+            return []
+        try:
+            with open(tp_path, "r", encoding="utf-8") as f:
+                return [
+                    ln.strip() for ln in f
+                    if ln.strip() and not ln.strip().startswith("#")
+                ]
+        except OSError:
+            return []
+
+    def _save_trusted_parents(self, entries: list[str]) -> bool:
+        """Writes trusted_parents.txt and reloads the detector immediately."""
+        tp_path = os.path.join(BASE_DIR, "trusted_parents.txt")
+        try:
+            with open(tp_path, "w", encoding="utf-8") as f:
+                f.write("# CyberSentinel — Analyst-Configured Trusted Parents\n")
+                f.write("# Process names listed here reduce LOLBin alert confidence\n")
+                f.write("# by one level (HIGH\u2192MEDIUM, MEDIUM\u2192LOW).\n")
+                f.write("# They do NOT suppress alerts entirely.\n")
+                f.write("# One process name per line. Case-insensitive.\n\n")
+                for entry in entries:
+                    f.write(entry.lower() + "\n")
+            # Hot-reload the detector so the daemon picks up changes immediately
+            if hasattr(self, "lolbas"):
+                self.lolbas.reload_trusted_parents()
+            return True
+        except OSError:
+            return False
+
     # ── SIEM EXPORT ───────────────────────────────────────────────────────────
+
 
     def _export_history(self, fmt: str):
         """Prompts for a save path then exports scan_cache to JSON or CSV."""
@@ -1312,6 +1348,17 @@ class CyberSentinelGUI(QMainWindow):
         refresh_btn.clicked.connect(self._refresh_dashboard)
         btn_row.addWidget(refresh_btn)
         
+        daemon_btn = QPushButton("🛡️  Start Daemon")
+        daemon_btn.setMinimumWidth(140)
+        daemon_btn.clicked.connect(self._start_daemon_bg)
+        btn_row.addWidget(daemon_btn)
+        
+        kill_btn = QPushButton("🛑  Kill Daemon")
+        kill_btn.setObjectName("danger")
+        kill_btn.setMinimumWidth(140)
+        kill_btn.clicked.connect(self._kill_daemon_bg)
+        btn_row.addWidget(kill_btn)
+        
         # [THESIS FIX] Quarantine Manager Button
         quar_btn = QPushButton("🗑  Manage Quarantine")
         quar_btn.setMinimumWidth(140)
@@ -1463,6 +1510,42 @@ class CyberSentinelGUI(QMainWindow):
             t.setItem(row, 2, table_item(r.get("sha256") or ""))
             v = r.get("verdict", "")
             t.setItem(row, 3, table_item(v, verdict_color(v)))
+
+    def _start_daemon_bg(self):
+        from PyQt6.QtWidgets import QInputDialog
+        path, ok = QInputDialog.getText(self, "Start Daemon", "Enter folder path to watch:")
+        if not ok or not path:
+            return
+        
+        path = path.strip().strip('"\'')
+        if not os.path.isdir(path):
+            QMessageBox.critical(self, "Invalid Path", f"The path provided is not a valid directory:\n{path}")
+            return
+        
+        import subprocess
+        cmd = [sys.executable, "CyberSentinel.py", "--daemon", path]
+        try:
+            subprocess.Popen(cmd, creationflags=subprocess.CREATE_NO_WINDOW)
+            QMessageBox.information(self, "Daemon Started", f"Monitoring started on:\n{path}")
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to start daemon: {e}")
+
+    def _kill_daemon_bg(self):
+        import psutil
+        found = False
+        for proc in psutil.process_iter(['name', 'cmdline']):
+            try:
+                if proc.info['cmdline'] and "CyberSentinel.py" in proc.info['cmdline'] and "--daemon" in proc.info['cmdline']:
+                    proc.kill()
+                    found = True
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                continue
+        
+        if found:
+            self.restore_net()
+            QMessageBox.information(self, "Daemon Stopped", "Background monitor stopped and network restored.")
+        else:
+            QMessageBox.warning(self, "Not Found", "No background daemon process was found.")
 
     # ── PAGE: SCAN FILE ───────────────────────────────────────────────────────
 
@@ -3254,7 +3337,7 @@ class CyberSentinelGUI(QMainWindow):
 
         # ── containment action log (slim, at the bottom) ──────────────────────
         self._net_console = ConsoleWidget()
-        self._net_console.setMaximumHeight(80)
+        self._net_console.setMaximumHeight(120)
         self._net_console.append_line("● Network monitor ready.", THEME["muted"])
         inner_layout.addWidget(self._net_console)
 
@@ -3561,7 +3644,7 @@ class CyberSentinelGUI(QMainWindow):
             # Hot-reload the in-memory blocklist
             if hasattr(self, "ja3"):
                 self.ja3.reload_blocklist()
-            self._iv_reload_ja3()
+            self._iv_reload_all()
 
     def _build_intel_viewer_page(self):
         """
@@ -4438,6 +4521,104 @@ class CyberSentinelGUI(QMainWindow):
         self._allowlist_input.returnPressed.connect(_al_add)
         inner_layout.addWidget(al_grp)
 
+        # ── Trusted Parents Manager ────────────────────────────────────────────
+        tp_grp = QGroupBox("LOLBin Trusted Parents  (trusted_parents.txt)")
+        tp_v = QVBoxLayout(tp_grp)
+        tp_v.setSpacing(8)
+
+        tp_info = QLabel(
+            "Parent processes listed here reduce LOLBin alert confidence by one level "
+            "(HIGH → MEDIUM, MEDIUM → LOW). "
+            "Alerts are still raised — this setting does not fully suppress detection. "
+            "Use the File Allowlist above for full suppression. "
+            "Useful for known-safe automation tools that spawn system binaries (e.g. python.exe during testing)."
+        )
+        tp_info.setStyleSheet(f"color: {THEME['muted']}; font-size: 10px;")
+        tp_info.setWordWrap(True)
+        tp_v.addWidget(tp_info)
+
+        self._tp_widget = QListWidget()
+        self._tp_widget.setMaximumHeight(120)
+        self._tp_widget.setStyleSheet(f"""
+            QListWidget {{
+                background: {THEME['surface']};
+                color: {THEME['text']};
+                border: 1px solid {THEME['border']};
+                border-radius: 4px;
+                font-size: 11px;
+                padding: 4px;
+            }}
+            QListWidget::item:selected {{
+                background: {THEME['blue']};
+                color: #ffffff;
+            }}
+        """)
+        for entry in self._load_trusted_parents():
+            self._tp_widget.addItem(entry)
+        tp_v.addWidget(self._tp_widget)
+
+        tp_add_row = QHBoxLayout()
+        self._tp_input = QLineEdit()
+        self._tp_input.setPlaceholderText("Process name e.g. python.exe, node.exe…")
+        tp_add_btn = QPushButton("➕  Add")
+        tp_add_btn.setMinimumWidth(70)
+        tp_remove_btn = QPushButton("✖  Remove Selected")
+        tp_remove_btn.setMinimumWidth(130)
+        tp_save_btn = QPushButton("💾  Save & Apply")
+        tp_save_btn.setMinimumWidth(130)
+        tp_add_row.addWidget(self._tp_input, 1)
+        tp_add_row.addWidget(tp_add_btn)
+        tp_add_row.addWidget(tp_remove_btn)
+        tp_add_row.addWidget(tp_save_btn)
+        tp_v.addLayout(tp_add_row)
+
+        self._tp_status = QLabel("")
+        self._tp_status.setStyleSheet(f"color: {THEME['green']}; font-size: 10px;")
+        tp_v.addWidget(self._tp_status)
+
+        def _tp_add():
+            entry = self._tp_input.text().strip().lower()
+            if not entry:
+                return
+            existing = [
+                self._tp_widget.item(i).text()
+                for i in range(self._tp_widget.count())
+            ]
+            if entry not in existing:
+                self._tp_widget.addItem(entry)
+                self._tp_input.clear()
+                self._tp_status.setStyleSheet(f"color: {THEME['green']}; font-size: 10px;")
+                self._tp_status.setText(f"Added: {entry} — click Save & Apply to activate.")
+            else:
+                self._tp_status.setStyleSheet(f"color: {THEME['yellow']}; font-size: 10px;")
+                self._tp_status.setText("Entry already in list.")
+
+        def _tp_remove():
+            for item in self._tp_widget.selectedItems():
+                self._tp_widget.takeItem(self._tp_widget.row(item))
+            self._tp_status.setStyleSheet(f"color: {THEME['green']}; font-size: 10px;")
+            self._tp_status.setText("Entry removed — click Save & Apply to activate.")
+
+        def _tp_save():
+            entries = [
+                self._tp_widget.item(i).text()
+                for i in range(self._tp_widget.count())
+            ]
+            ok = self._save_trusted_parents(entries)
+            self._tp_status.setStyleSheet(
+                f"color: {THEME['green' if ok else 'red']}; font-size: 10px;"
+            )
+            self._tp_status.setText(
+                f"✓ Saved {len(entries)} trusted parent(s) — detector reloaded." if ok
+                else "✗ Failed to save trusted_parents.txt."
+            )
+
+        tp_add_btn.clicked.connect(_tp_add)
+        tp_remove_btn.clicked.connect(_tp_remove)
+        tp_save_btn.clicked.connect(_tp_save)
+        self._tp_input.returnPressed.connect(_tp_add)
+        inner_layout.addWidget(tp_grp)
+
         # ── High-Priority Scan Paths ────────────────────────────────────────────
         hp_grp = QGroupBox("High-Priority Scan Paths  (daemon)")
         hp_v = QVBoxLayout(hp_grp)
@@ -4519,8 +4700,8 @@ class CyberSentinelGUI(QMainWindow):
         _whs = self.logic._webhooks()
         if hasattr(self, "lolbas"):
             self.lolbas._webhook_url      = url
-        if hasattr(self, "lolbin"):
-            self.lolbin._webhook_url      = url
+        # if hasattr(self, "lolbin"):
+        #     self.lolbin._webhook_url      = url
         if hasattr(self, "byovd"):
             self.byovd.webhook_url        = url
         if hasattr(self, "correlator"):

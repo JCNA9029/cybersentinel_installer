@@ -405,8 +405,6 @@ class Ja3Monitor:
                     return
                 if pkt.haslayer(TCP) and pkt.haslayer(Raw):
                     ja3 = _compute_ja3(bytes(pkt[Raw].load))
-                    if ja3:
-                        print(f"[DEBUG-JA3] computed={ja3} blocklist_hit={ja3 in self._blocklist}")
                     if ja3 and ja3 in self._blocklist:
                         src = pkt[IP].src if pkt.haslayer(IP) else "?"
                         dst = pkt[IP].dst if pkt.haslayer(IP) else "?"

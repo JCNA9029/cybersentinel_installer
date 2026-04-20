@@ -8,6 +8,7 @@ import datetime
 import json
 from . import utils
 from .intel_updater import load_lolbas
+from ._paths import INSTALL_DIR as _INSTALL_DIR
 
 # ─── Built-in high-confidence abuse patterns ─────────────────────────────────
 # Each entry: (binary_name, regex_pattern, mitre_technique, description, base_score)
@@ -15,7 +16,7 @@ from .intel_updater import load_lolbas
 BUILTIN_PATTERNS: list[tuple] = [
     # Execution / Download
     ("certutil.exe",    r"-urlcache|-decode|-encode|-f\s+https?://",    "T1105 / T1140",  "CertUtil download or decode — common dropper technique",        3),
-    ("mshta.exe",       r"https?://|vbscript:|javascript:",              "T1218.005",      "MSHTA remote script execution",                                 3),
+    ("mshta.exe",       r"https?://|vbscript:|javascript:|\.hta\b",     "T1218.005",      "MSHTA script execution (remote URL, VBScript, or local HTA)",   3),
     ("regsvr32.exe",    r"/i:https?://|scrobj\.dll|/s\s+/n\s+/u\s+/i", "T1218.010",      "Regsvr32 COM scriptlet execution (Squiblydoo)",                 3),
     ("rundll32.exe",    r"javascript:|vbscript:|pcwrun|advpack",         "T1218.011",      "Rundll32 arbitrary code execution via JS/VBS",                  3),
     ("msbuild.exe",     r"\.proj|\.targets|\.xml",                       "T1127.001",      "MSBuild inline task execution — bypasses AppLocker",            2),
@@ -60,9 +61,26 @@ HIGH_RISK_PARENTS = {
     "winword.exe", "excel.exe", "powerpnt.exe", "outlook.exe",
     "msaccess.exe", "onenote.exe",         # Office suite
     "chrome.exe", "firefox.exe", "msedge.exe", "iexplore.exe",  # Browsers
+    "brave.exe", "opera.exe", "vivaldi.exe", "waterfox.exe",    # Chromium-based browsers
     "acrord32.exe", "acrobat.exe",          # PDF readers
     "mspaint.exe", "wscript.exe", "cscript.exe",
 }
+
+# ─── Browser parents — high-risk but allow chrome-extension:// native-messaging ──
+# These are in HIGH_RISK_PARENTS but legitimately spawn cmd.exe with
+# chrome-extension:// URIs for native messaging host (re-)registration.
+# We escalate confidence for everything else but suppress the specific
+# chrome-extension native-host pattern when the target is in a trusted path.
+BROWSER_PARENTS: frozenset[str] = frozenset({
+    "chrome.exe", "firefox.exe", "msedge.exe", "brave.exe",
+    "opera.exe", "vivaldi.exe", "waterfox.exe",
+})
+
+# ─── CyberSentinel own-process exclusion ─────────────────────────────────────
+# The installer uses schtasks to register the Ollama service.  We suppress
+# schtasks alerts whose parent exe path contains "cybersentinel" so the
+# installer doesn't noise-up the analyst's own LoLBin page.
+_CS_PARENT_RE = re.compile(r"cybersentinel", re.IGNORECASE)
 
 # ─── Known-legitimate parent contexts ────────────────────────────────────────
 # These parents reduce confidence — the command may be legitimate admin work.
@@ -143,15 +161,18 @@ def _extract_binary_name(exe_path: str) -> str:
     return os.path.basename(path).lower()
 
 # Chrome/Edge extension IDs are 32 lowercase alphanumeric chars.
+# We match against the RAW cmdline (not the truncated entropy_hits tokens)
+# because _high_entropy_args truncates tokens to 40 chars, which is shorter
+# than the full chrome-extension:// URI (19 + 32 = 51 chars minimum).
 # Suppression requires ALL of:
-#   1. Every entropy hit matches chrome-extension://<32 alphanum chars>
+#   1. The raw cmdline contains a chrome-extension:// URI with a valid 32-char ID
 #   2. The cmd.exe target path resolves to a trusted software directory
 #      (Program Files, ProgramData — never AppData\Roaming or Temp)
 # This covers both the installer case (Acrobat parent) AND the browser case
-# (user opens PDF in Brave → Acrobat extension re-registers via brave.exe)
+# (user opens PDF in Brave → Acrobat extension re-registers via WCChromeExt)
 # without opening a bypass for malicious extensions, whose payloads will
 # always point outside trusted install directories.
-_CHROME_EXT_RE = re.compile(r"^chrome-extension://[a-z0-9]{32}", re.IGNORECASE)
+_CHROME_EXT_RE = re.compile(r"chrome-extension://[a-z0-9]{32}", re.IGNORECASE)
 
 # Trusted base paths for native-messaging host registration targets.
 # AppData/Roaming, Temp, and user-writable locations are intentionally excluded —
@@ -197,6 +218,44 @@ def _high_entropy_args(cmdline: str) -> list[str]:
     return suspicious
 
 
+_TRUSTED_PARENTS_FILE = str(_INSTALL_DIR / "trusted_parents.txt")
+_TRUSTED_PARENTS_TEMPLATE = """# CyberSentinel — Analyst-Configured Trusted Parents
+# Processes listed here reduce LOLBin alert confidence by one level (HIGH→MEDIUM, MEDIUM→LOW).
+# They do NOT suppress alerts entirely — use exclusions.txt for full suppression.
+# One process name per line. Case-insensitive. Lines starting with # are comments.
+#
+# Example:
+#   python.exe
+#   node.exe
+"""
+
+def _load_analyst_trusted_parents() -> frozenset:
+    """
+    Loads analyst-defined trusted parent process names from trusted_parents.txt.
+    Auto-creates the file with a template on first run.
+    Returns a frozenset of lowercase process names merged with TRUSTED_PARENTS.
+    """
+    if not _TRUSTED_PARENTS_FILE:
+        return frozenset()
+    import os
+    if not os.path.exists(_TRUSTED_PARENTS_FILE):
+        try:
+            with open(_TRUSTED_PARENTS_FILE, "w") as f:
+                f.write(_TRUSTED_PARENTS_TEMPLATE)
+        except Exception:
+            pass
+        return frozenset()
+    try:
+        with open(_TRUSTED_PARENTS_FILE, "r") as f:
+            return frozenset(
+                line.split("#")[0].strip().lower()
+                for line in f
+                if line.split("#")[0].strip()
+            )
+    except Exception:
+        return frozenset()
+
+
 class LolbasDetector:
     """
     Production-grade LoLBin abuse detector with five detection layers:
@@ -214,6 +273,11 @@ class LolbasDetector:
     def __init__(self, webhook_url: str = ""):
         self._lolbas_patterns: list[dict] = []
         self._webhook_url: str = webhook_url
+        # Merge hardcoded + analyst-configured trusted parents at startup.
+        # Re-instantiate the detector (or call reload_trusted_parents) to
+        # pick up changes without restarting the daemon.
+        analyst_trusted = _load_analyst_trusted_parents()
+        self._trusted_parents: frozenset = TRUSTED_PARENTS | analyst_trusted
         self._load_lolbas_feed()
 
     def _load_lolbas_feed(self):
@@ -292,6 +356,13 @@ class LolbasDetector:
         finding["lolbas_usecase"]     = matched_cmd.get("Usecase", "—")
         return finding
 
+    def reload_trusted_parents(self):
+        """Re-reads trusted_parents.txt without restarting the daemon.
+        Call this from the GUI Settings page after the analyst edits the file.
+        """
+        analyst_trusted = _load_analyst_trusted_parents()
+        self._trusted_parents = TRUSTED_PARENTS | analyst_trusted
+
     def check_process(
         self,
         process_name: str,
@@ -319,6 +390,12 @@ class LolbasDetector:
         if utils.is_excluded(exe_path, cmdline):
             return None
 
+        # Self-exclusion: suppress schtasks alerts spawned by the CyberSentinel
+        # installer itself (cybersentinel_setup.tmp, setup.exe, etc.).
+        # The installer registers the Ollama server task — this is expected.
+        if _CS_PARENT_RE.search(parent_name or ""):
+            return None
+
         # Layer 1: Normalize the command line to strip obfuscation
         cmdline_normalized = _normalize_cmdline(cmdline)
         cmd_lower          = cmdline_normalized.lower()
@@ -338,7 +415,8 @@ class LolbasDetector:
         # Determine parent context for confidence adjustment
         parent_lower        = (parent_name or "").lower()
         is_high_risk_parent = parent_lower in HIGH_RISK_PARENTS
-        is_trusted_parent   = parent_lower in TRUSTED_PARENTS
+        is_browser_parent   = parent_lower in BROWSER_PARENTS
+        is_trusted_parent   = parent_lower in self._trusted_parents
         is_dev_tool_parent  = parent_lower in DEV_TOOL_PARENTS
 
         finding          = None
@@ -421,31 +499,24 @@ class LolbasDetector:
                     # actual obfuscation.  If there is a real pattern match (Layer 3/4)
                     # the finding already exists and this branch is not reached.
 
-                    # ── chrome-extension:// installer suppression ─────────────
-                    # Software installers (Acrobat, Zoom, etc.) spawn cmd.exe with
-                    # a chrome-extension:// URI to register a native messaging host.
-                    # The 32-char extension ID is structurally identifiable and the
-                    # parent is never a browser in the legitimate case.
-                    # If the parent IS a browser, the same pattern is suspicious
-                    # (extension abusing cmd.exe) — we let the alert through.
-                    _all_ext_ids = (
-                        entropy_hits
-                        and all(_CHROME_EXT_RE.match(t) for t in entropy_hits)
-                    )
-                    # Check that the cmd.exe target path (the executable being
-                    # invoked after /c) resolves to a trusted install directory.
-                    # This makes the suppression safe even when the parent is
-                    # brave.exe — e.g. user opens PDF in Brave, Acrobat extension
-                    # re-registers via WCChromeExt which lives in Program Files.
-                    # A malicious extension payload will always land in AppData,
-                    # Temp, or another user-writable path and will still alert.
-                    _cmd_target = cmdline_normalized.lower()
+                    # ── chrome-extension:// native-messaging suppression ──────
+                    # Software installers AND browsers (Acrobat, Brave, Chrome)
+                    # spawn cmd.exe with a chrome-extension:// URI to register
+                    # a native messaging host.  We suppress only when:
+                    #   1. The raw cmdline contains a valid chrome-extension:// URI
+                    #      (checked against the full cmdline, NOT the 40-char
+                    #      truncated entropy_hits tokens — that was the old bug)
+                    #   2. The target path is inside a trusted install directory
+                    # Malicious extension payloads always land in AppData/Temp
+                    # and will still alert regardless of this suppression.
+                    _raw_lower = cmdline_normalized.lower()
+                    _has_ext_uri = bool(_CHROME_EXT_RE.search(_raw_lower))
                     _target_is_trusted = any(
-                        root in _cmd_target
+                        root in _raw_lower
                         for root in _TRUSTED_INSTALL_ROOTS
                     )
-                    if _all_ext_ids and _target_is_trusted:
-                        pass  # benign extension registration from a trusted path
+                    if _has_ext_uri and _target_is_trusted:
+                        pass  # benign extension native-host registration
                     else:
                         finding = {
                             "type":        "LOLBIN_ABUSE",
@@ -485,28 +556,22 @@ class LolbasDetector:
         # own score capped at 2 (MEDIUM) because without cmdline proof we cannot
         # justify HIGH confidence — but we can justify MEDIUM for known-dangerous
         # binaries like mshta whose presence alone is suspicious.
-        if finding is None and not cmdline_normalized:
-            for binary, _pat, mitre, desc, pattern_score in BUILTIN_PATTERNS:
-                b_lower = binary.lower()
-                if b_lower == "cmd.exe" and is_trusted_parent:
-                    continue   # OS-routine cmd.exe from services — skip noise
-                if name_lower == b_lower or name_lower.endswith(b_lower):
+        # After all layers fail but binary is a known LOLBin with no cmdline
+        if finding is None and not cmdline:
+            for binary, pattern, mitre, desc, _ in BUILTIN_PATTERNS:
+                if name_lower == binary.lower():
                     finding = {
-                        "type":               "LOLBIN_ABUSE",
-                        "binary":             name_lower,
-                        "mitre":              mitre,
-                        "description":        desc + " [cmdline unavailable — WMI race]",
-                        "cmdline":            "",
+                        "type": "LOLBIN_ABUSE",
+                        "binary": name_lower,
+                        "mitre": mitre,
+                        "description": desc + " [cmdline not captured — WMI/ETW race]",
+                        "cmdline": "",
                         "cmdline_normalized": "",
-                        "source":             "name-only",
-                        "parent_name":        parent_name,
-                        "parent_pid":         parent_pid,
+                        "source": "name-only",
+                        "parent_name": parent_name,
+                        "parent_pid": parent_pid,
                     }
-                    # Cap at MEDIUM: no cmdline means no pattern proof, but
-                    # high-score binaries (mshta=3, regsvr32=3) still warrant
-                    # more than LOW when spawned from a non-system parent.
-                    base_score       = min(2, pattern_score)
-                    detection_source = "name-only (no cmdline)"
+                    base_score = 1  # LOW confidence — no cmdline to confirm abuse
                     break
 
         if finding is None:
@@ -523,27 +588,26 @@ class LolbasDetector:
             confidence_score = max(1, confidence_score - 1)
             finding["parent_risk"] = "LOW — spawned by trusted system service"
         elif is_dev_tool_parent:
-            # Dev tools (node.exe, VS Code, npm) legitimately spawn powershell
-            # with flags like -NoProfile and -ExecutionPolicy Bypass for build
-            # scripts, postinstall hooks, and editor extensions.  These stealth
-            # flags alone are not actionable in a dev context.
-            # Only fire if the cmdline contains a genuinely high-risk payload:
-            # encoded commands, download cradles, IEX, or injection APIs.
-            # If not, suppress entirely — the analyst would dismiss it anyway
-            # and repeated MEDIUM noise degrades trust in the detector.
-            _DEV_TOOL_HIGH_RISK = re.compile(
-                r"-e[nc]{0,6}\s+[A-Za-z0-9+/=]{20,}"                # encoded command
-                r"|IEX\b|Invoke-Expression\b"                          # dynamic execution
-                r"|DownloadString\s*\(|New-Object\s+Net\.WebClient"   # download cradle
-                r"|Start-BitsTransfer.*http"                           # BITS cradle
-                r"|Invoke-Mimikatz|Invoke-ReflectivePEInjection"       # known offensive
-                r"|VirtualAlloc|WriteProcessMemory|CreateThread",      # injection APIs
-                re.IGNORECASE,
-            )
-            if not _DEV_TOOL_HIGH_RISK.search(cmdline_normalized):
-                # Stealth flags only (-NoProfile, -ExecutionPolicy Bypass, etc.)
-                # from a known dev tool parent — not actionable.
-                return None
+            # Dev tools (node.exe, VS Code, python.exe, npm) legitimately spawn
+            # powershell.exe with -NoProfile / -ExecutionPolicy Bypass for build
+            # scripts and postinstall hooks.  The strict suppression below ONLY
+            # applies to powershell/pwsh.  A dev tool spawning certutil, mshta,
+            # regsvr32, or rundll32 is always suspicious regardless of parent
+            # and passes through at capped MEDIUM confidence.
+            _is_ps_binary = name_lower in ("powershell.exe", "pwsh.exe")
+            if _is_ps_binary:
+                _DEV_TOOL_HIGH_RISK = re.compile(
+                    r"-e[nc]{0,6}\s+[A-Za-z0-9+/=]{20,}"                # encoded command
+                    r"|IEX\b|Invoke-Expression\b"                          # dynamic execution
+                    r"|DownloadString\s*\(|New-Object\s+Net\.WebClient"   # download cradle
+                    r"|Start-BitsTransfer.*http"                           # BITS cradle
+                    r"|Invoke-Mimikatz|Invoke-ReflectivePEInjection"       # known offensive
+                    r"|VirtualAlloc|WriteProcessMemory|CreateThread",      # injection APIs
+                    re.IGNORECASE,
+                )
+                if not _DEV_TOOL_HIGH_RISK.search(cmdline_normalized):
+                    # Stealth flags only from a dev-tool parent — not actionable for PS.
+                    return None
             confidence_score = min(2, confidence_score)
             finding["parent_risk"] = f"MEDIUM — dev tool parent ({parent_name}); verify if expected"
         else:
@@ -555,11 +619,12 @@ class LolbasDetector:
         finding["detection_source"] = detection_source
 
         if from_daemon:
-            self._save_alert(finding)
+            # self._save_alert(finding) # Disabled to prevent duplicate alerts
+            pass
 
         return finding
 
-    def _save_alert(self, finding: dict):
+    def save_alert(self, finding: dict):
         """Persists a LoLBin alert to event_timeline AND fileless_alerts (for GUI display)."""
         now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         findings_summary = json.dumps([

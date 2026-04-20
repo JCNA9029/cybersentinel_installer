@@ -86,6 +86,17 @@ class AmsiMonitor:
 
         try:
             handle = win32evtlog.OpenEventLog(None, LOG_NAME)
+            # Fast-forward instantly to the end of the log
+            num_records = win32evtlog.GetNumberOfEventLogRecords(handle)
+            oldest_record = win32evtlog.GetOldestEventLogRecord(handle)
+            if num_records > 0:
+                newest_record = oldest_record + num_records - 1
+                seek_flags = win32con.EVENTLOG_SEEK_READ | win32con.EVENTLOG_FORWARDS_READ
+                win32evtlog.ReadEventLog(handle, seek_flags, newest_record)
+                
+                seq_flags = win32con.EVENTLOG_SEQUENTIAL_READ | win32con.EVENTLOG_FORWARDS_READ
+                while win32evtlog.ReadEventLog(handle, seq_flags, 0):
+                    pass
         except Exception as e:
             print(f"[-] AMSI: Cannot open PowerShell event log: {e}")
             print("[-] Enable ScriptBlock logging: Set-Item HKLM:\\Software\\Policies\\Microsoft\\Windows\\PowerShell\\ScriptBlockLogging -Name EnableScriptBlockLogging -Value 1")

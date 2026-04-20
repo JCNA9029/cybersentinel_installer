@@ -50,6 +50,23 @@ _TRUSTED_SYSTEM_PARENTS = frozenset({
     "vscode.exe", "code.exe",       # VS Code extensions
 })
 
+_RECENTLY_ALERTED_PIDS = set()
+_LOCK = threading.Lock()
+
+def _check_and_register_alert(pid):
+    """Returns True if the PID hasn't been alerted on in the last 5s."""
+    with _LOCK:
+        if pid in _RECENTLY_ALERTED_PIDS:
+            return False
+        _RECENTLY_ALERTED_PIDS.add(pid)
+        # Clear after 5 seconds
+        threading.Timer(5.0, lambda: _clear_pid(pid)).start()
+        return True
+
+def _clear_pid(pid):
+    with _LOCK:
+        _RECENTLY_ALERTED_PIDS.discard(pid)
+
 class ThreatHandler(FileSystemEventHandler):
     def __init__(self, logic: ScannerLogic):
         self.logic = logic
@@ -74,7 +91,7 @@ class ThreatHandler(FileSystemEventHandler):
 # On a busy machine (hundreds of process creations per minute) this consumed
 # hundreds of MB over a multi-day daemon run.
 # A deque-backed ring buffer keeps membership O(1) while capping memory.
-_ETW_SEEN_MAX = 50_000
+_ETW_SEEN_MAX = 200000
 
 class _BoundedSeen:
     """O(1) membership test with a fixed memory ceiling."""
@@ -133,6 +150,19 @@ def _monitor_processes_etw(lolbas: LolbasDetector, lolbin, fileless: FilelessMon
     try:
         handle = win32evtlog.OpenEventLog(None, LOG_NAME)
         print("[ETW] Security log opened OK.")
+        
+        # Fast-forward instantly to the end of the log
+        num_records = win32evtlog.GetNumberOfEventLogRecords(handle)
+        oldest_record = win32evtlog.GetOldestEventLogRecord(handle)
+        if num_records > 0:
+            newest_record = oldest_record + num_records - 1
+            seek_flags = win32con.EVENTLOG_SEEK_READ | win32con.EVENTLOG_FORWARDS_READ
+            win32evtlog.ReadEventLog(handle, seek_flags, newest_record)
+            
+            # Clear any remaining buffered events to ensure we are at EOF
+            seq_flags = win32con.EVENTLOG_SEQUENTIAL_READ | win32con.EVENTLOG_FORWARDS_READ
+            while win32evtlog.ReadEventLog(handle, seq_flags, 0):
+                pass
     except Exception as e:
         print(f"[ETW] FAILED — cannot open Security log: {e}")
         print("[ETW] Run: auditpol /set /subcategory:\"Process Creation\" /success:enable")
@@ -194,12 +224,9 @@ def _monitor_processes_etw(lolbas: LolbasDetector, lolbin, fileless: FilelessMon
                     parent_name=parent_name,
                     exe_path=exe_path,
                 )
-                if hit:
+                if hit and _check_and_register_alert(pid):
                     colors.critical(lolbas.format_alert(hit))
-
-                lolbin_hit = lolbin.check(name, cmdline, parent_name=parent_name)
-                if lolbin_hit:
-                    lolbin.print_alert(lolbin_hit)
+                    lolbas.save_alert(hit)
 
                 # Route script host cmdlines through AMSI heuristics.
                 # This mirrors the WMI path and was missing from the ETW path,
@@ -245,22 +272,20 @@ def _monitor_processes(logic, lolbas, byovd, baseline, dga, lolbin, fileless, se
             if self_exe and exe_path and exe_path.lower() == self_exe:
                 continue
 
-            # ── CommandLine: read immediately then retry if empty ──────────────
-            # WMI returns None for short-lived processes because the OS recycles
-            # the PEB before WMI can read it.  Strategy:
-            #   1. Use what WMI already gave us.
-            #   2. If empty, sleep 80 ms and re-query Win32_Process by PID.
-            #   3. If still empty, try psutil.
-            #   4. Fall back to empty string — lolbas_detector Layer 6 still
-            #      emits a name-only confidence-adjusted alert for known LOLBins.
+            # ── CommandLine: Optimized capture
+            # WMI watcher 'proc' object is live at moment of creation.
+            # We must access it immediately before it is garbage collected.
             cmdline = proc.CommandLine or ""
+
+            # If empty, the OS likely already recycled the PEB.
+            # We attempt one final aggressive retrieval via psutil
             if not cmdline and pid:
-                time.sleep(0.08)
                 try:
-                    procs = c.Win32_Process(ProcessId=pid)
-                    if procs:
-                        cmdline = procs[0].CommandLine or ""
-                except Exception:
+                    import psutil
+                    proc_handle = psutil.Process(pid)
+                    # Use cmdline() list join — this is much faster than WMI
+                    cmdline = " ".join(proc_handle.cmdline())
+                except:
                     pass
 
             if not cmdline and pid:
@@ -280,7 +305,6 @@ def _monitor_processes(logic, lolbas, byovd, baseline, dga, lolbin, fileless, se
                         parent_name = parent_list[0].Name or ""
                 except Exception:
                     pass
-
             # ── LoLBin checks ─────────────────────────────────────────────────
             hit = lolbas.check_process(
                 name,
@@ -290,17 +314,11 @@ def _monitor_processes(logic, lolbas, byovd, baseline, dga, lolbin, fileless, se
                 parent_pid   = parent_pid,
                 exe_path     = exe_path,
             )
-            if hit:
+            if hit and _check_and_register_alert(pid):
                 colors.critical(lolbas.format_alert(hit))
+                lolbas.save_alert(hit)
                 # [THESIS FIX] User-Mode Active Blocking
                 if hit.get("confidence") == "HIGH" and pid:
-                    utils.terminate_process(pid, name)
-
-            lolbin_hit = lolbin.check(name, cmdline, pid=pid, parent_name=parent_name)
-            if lolbin_hit:
-                lolbin.print_alert(lolbin_hit)
-                # [THESIS FIX] User-Mode Active Blocking
-                if pid:
                     utils.terminate_process(pid, name)
 
             # ── BYOVD ─────────────────────────────────────────────────────────

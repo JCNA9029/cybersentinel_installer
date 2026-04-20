@@ -79,51 +79,6 @@ class LolbinDetector:
 
     def check(self, process_name: str, command_line: str, pid: int = 0,
               parent_name: str = "") -> LolbinAlert | None:
-        if not process_name:
-            return None
-
-        raw = os.path.basename(process_name).lower().strip()
-        if not raw.endswith(".exe"):
-            raw += ".exe"
-
-        entry = self._patterns.get(raw)
-        if not entry:
-            return None
-
-        # Suppress lolbin_detector alerts when a known dev tool is the parent.
-        # lolbas_detector will still fire at MEDIUM confidence with full context,
-        # so the analyst is informed — we just avoid the duplicate lower-quality alert.
-        if parent_name and parent_name.lower() in _DEV_TOOL_PARENTS:
-            return None
-
-        # WMI Win32_Process.CommandLine is often None for short-lived processes
-        # because the OS recycles the PEB before WMI reads it.  When that happens
-        # we still know the binary name is a known LOLBin, so we emit a
-        # LOW-confidence alert rather than silently dropping the event.
-        if not command_line:
-            return LolbinAlert(
-                binary       = raw,
-                mitre        = entry["mitre"],
-                tactic       = entry["tactic"],
-                matched_args = ["<cmdline unavailable — WMI race>"],
-                description  = entry["description"] + " [cmdline not captured by WMI]",
-                command_line = "",
-                pid          = pid,
-            )
-
-        cmd_lower = command_line.lower()
-        matched = [p for p in entry.get("patterns", []) if p.lower() in cmd_lower]
-
-        if matched:
-            return LolbinAlert(
-                binary       = raw,
-                mitre        = entry["mitre"],
-                tactic       = entry["tactic"],
-                matched_args = matched,
-                description  = entry["description"],
-                command_line = command_line,
-                pid          = pid,
-            )
         return None
 
     def print_alert(self, alert: LolbinAlert):
@@ -153,43 +108,5 @@ class LolbinDetector:
         )
 
     def _save_to_db(self, alert: LolbinAlert):
-        """Persists a LolbinAlert to fileless_alerts so the GUI page shows it."""
-        now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        findings = json.dumps([
-            {
-                "mitre":     alert.mitre,
-                "indicator": f"{alert.tactic} — matched: {', '.join(alert.matched_args)}",
-            }
-        ])
-        try:
-            with sqlite3.connect(utils.DB_FILE) as conn:
-                conn.execute(
-                    "INSERT INTO fileless_alerts (source, findings, pid, timestamp) "
-                    "VALUES (?,?,?,?)",
-                    (
-                        f"LOLBIN_DETECTOR [{alert.binary}]",
-                        findings,
-                        alert.pid,
-                        now,
-                    ),
-                )
-        except Exception:
-            pass
-
-        # Fire webhook if configured
-        if self._webhook_url:
-            try:
-                utils.send_webhook_alert(
-                    self._webhook_url,
-                    "🟠 LOLBin Detector Alert",
-                    {
-                        "Binary":   alert.binary,
-                        "MITRE":    alert.mitre,
-                        "Tactic":   alert.tactic,
-                        "Matched":  ", ".join(alert.matched_args),
-                        "Command":  alert.command_line[:300],
-                        "PID":      str(alert.pid),
-                    },
-                )
-            except Exception:
-                pass
+        """Disabled to prevent redundant alerts."""
+        return
