@@ -90,11 +90,11 @@ Source: "installer_tools\check_python.bat";    DestDir: "{app}\installer_tools";
 [Icons]
 ; Desktop shortcut
 ; {reg:...} reads the exact Python path saved during install — never picks up a wrong Python from PATH.
-Name: "{userdesktop}\CyberSentinel GUI"; Filename: "{reg:HKLM\SOFTWARE\{#MyAppName},PythonwExe|pythonw.exe}"; Parameters: """{app}\gui.py"""; WorkingDir: "{app}"; IconFilename: "{app}\assets\icon.ico"; AppUserModelID: "CyberSentinel.GUI"; Tasks: desktopicon; Flags: runasadmin
+Name: "{userdesktop}\CyberSentinel GUI"; Filename: "{reg:HKLM\SOFTWARE\{#MyAppName},PythonwExe|pythonw.exe}"; Parameters: """{app}\gui.py"""; WorkingDir: "{app}"; IconFilename: "{app}\assets\icon.ico"; AppUserModelID: "CyberSentinel.GUI"; Tasks: desktopicon
 
 ; Start Menu group
-Name: "{group}\CyberSentinel GUI";        Filename: "{reg:HKLM\SOFTWARE\{#MyAppName},PythonwExe|pythonw.exe}"; Parameters: """{app}\gui.py""";                                                                          WorkingDir: "{app}"; IconFilename: "{app}\assets\icon.ico"; Tasks: startmenuicon; Flags: runasadmin
-Name: "{group}\CyberSentinel GUI";        Filename: "{reg:HKLM\SOFTWARE\{#MyAppName},PythonwExe|pythonw.exe}"; Parameters: """{app}\gui.py"""; WorkingDir: "{app}"; IconFilename: "{app}\assets\icon.ico"; AppUserModelID: "CyberSentinel.GUI"; Tasks: startmenuicon; Flags: runasadmin
+Name: "{group}\CyberSentinel GUI";        Filename: "{reg:HKLM\SOFTWARE\{#MyAppName},PythonwExe|pythonw.exe}"; Parameters: """{app}\gui.py""";                                                                          WorkingDir: "{app}"; IconFilename: "{app}\assets\icon.ico"; Tasks: startmenuicon
+Name: "{group}\CyberSentinel GUI";        Filename: "{reg:HKLM\SOFTWARE\{#MyAppName},PythonwExe|pythonw.exe}"; Parameters: """{app}\gui.py"""; WorkingDir: "{app}"; IconFilename: "{app}\assets\icon.ico"; AppUserModelID: "CyberSentinel.GUI"; Tasks: startmenuicon
 Name: "{group}\CyberSentinel Dashboard";  Filename: "cmd.exe"; Parameters: "/k python.exe ""{app}\dashboard.py"""; WorkingDir: "{app}"; Tasks: startmenuicon
 Name: "{group}\Uninstall CyberSentinel";  Filename: "{uninstallexe}"; Tasks: startmenuicon
 
@@ -504,6 +504,30 @@ begin
 end;
 
 // ── Guard existing config.json on reinstall ───────────────────
+// ── Set "Run as administrator" flag on a .lnk file ───────────
+// Inno Setup has no built-in [Icons] flag for this. Instead we patch the
+// LinkFlags DWORD in the .lnk file header directly.
+//
+// .lnk file layout (Shell Link Binary File Format, MS-SHLLINK §2.1):
+//   Offset 0x00–0x03 : HeaderSize (always 0x4C)
+//   Offset 0x14–0x17 : LinkFlags  (DWORD, little-endian)
+//
+// SLDF_RUNAS_USER = 0x00002000  (bit 13 of LinkFlags)
+//   = bit 5 (0x20) of the byte at offset 0x15 (the second byte of LinkFlags).
+//
+// In Inno Setup Pascal strings are 1-indexed, so:
+//   byte at offset 0x15 (0-based) == Content[0x16] (1-based) == Content[22].
+procedure SetShortcutRunAsAdmin(const LnkPath: String);
+var
+  Content: AnsiString;
+begin
+  if not FileExists(LnkPath) then Exit;
+  if not LoadStringFromFile(LnkPath, Content) then Exit;
+  if Length(Content) < 24 then Exit;           // sanity-check: header must be present
+  Content[22] := Chr(Ord(Content[22]) or $20); // set SLDF_RUNAS_USER bit
+  SaveStringToFile(LnkPath, Content, False);
+end;
+
 procedure CurStepChanged(CurStep: TSetupStep);
 var
   ConfigPath: String;
@@ -541,8 +565,8 @@ begin
         mbInformation, MB_OK
       );
     end;
-  end;
-  // ── Model download failure warning ────────────────────────────────────
+
+    // ── Model download failure warning ────────────────────────────────────
     // install_helper.py::step_models() writes this flag when the GDrive
     // download fails, so the user knows the AI Analyst will be unavailable.
     if FileExists(ExpandConstant('{app}\model_download_failed.flag')) then begin
@@ -580,7 +604,7 @@ begin
         '  reg add "HKLM\Software\Microsoft\Windows\CurrentVersion\Policies\System\Audit"' + #13#10 +
         '      /v ProcessCreationIncludeCmdLine_Enabled /t REG_DWORD /d 1 /f' + #13#10 + #13#10 +
         'See install_log.txt in C:\CyberSentinel for details.',
-        mbWarning, MB_OK
+        mbError, MB_OK
       );
     end;
 
@@ -600,9 +624,21 @@ begin
         '  reg add "HKLM\Software\Policies\Microsoft\Windows\PowerShell\ScriptBlockLogging"' + #13#10 +
         '      /v EnableScriptBlockLogging /t REG_DWORD /d 1 /f' + #13#10 + #13#10 +
         'See install_log.txt in C:\CyberSentinel for details.',
-        mbWarning, MB_OK
+        mbError, MB_OK
       );
     end;
+  end;
+
+  // ── After all shortcuts are written, mark GUI ones as "Run as admin" ──
+  // This is the correct Inno Setup way to set the elevation bit on a shortcut.
+  // We cannot use Flags: runasadmin in [Icons] — that flag does not exist.
+  // ssDone fires after [Icons] entries have been created on disk.
+  if CurStep = ssDone then begin
+    if IsTaskSelected('desktopicon') then
+      SetShortcutRunAsAdmin(ExpandConstant('{userdesktop}\CyberSentinel GUI.lnk'));
+    if IsTaskSelected('startmenuicon') then
+      SetShortcutRunAsAdmin(ExpandConstant('{group}\CyberSentinel GUI.lnk'));
+  end;
 end;
 
 
