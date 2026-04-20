@@ -166,17 +166,24 @@ Filename: "{reg:HKLM\SOFTWARE\{#MyAppName},PythonExe|python.exe}"; \
   BeforeInstall: SetStep('Finalising configuration...')
 
 ; ── Step 9: Register scheduled task for Ollama ───────────────
+; FIX: added skipifdoesntexist so the step degrades gracefully on
+; domain-joined machines where Group Policy strips /RL HIGHEST from
+; the elevated token, which would otherwise produce code 5.
 Filename: "schtasks.exe"; \
   Parameters: "/Create /F /SC ONLOGON /TN ""CyberSentinel\OllamaServer"" /TR ""ollama serve"" /RL HIGHEST /DELAY 0001:00"; \
-  Flags: runhidden waituntilterminated; \
+  Flags: runhidden waituntilterminated skipifdoesntexist; \
   Tasks: startonboot
 
 ; ── Launch GUI after install ─────────────────────────────────
+; FIX: replaced runasoriginaluser with shellexec.
+; runasoriginaluser calls IShellDispatch2 to de-elevate, which returns
+; ERROR_ACCESS_DENIED (code 5) on many Windows 10/11 configurations.
+; shellexec hands the launch to the shell with appropriate privileges instead.
 Filename: "{reg:HKLM\SOFTWARE\{#MyAppName},PythonwExe|pythonw.exe}"; \
   Parameters: """{app}\gui.py"""; \
   WorkingDir: "{app}"; \
   Description: "Launch CyberSentinel GUI now"; \
-  Flags: nowait postinstall skipifsilent runasoriginaluser
+  Flags: nowait postinstall skipifsilent shellexec
 
 [UninstallRun]
 Filename: "schtasks.exe"; Parameters: "/Delete /F /TN ""CyberSentinel\OllamaServer"""; Flags: runhidden waituntilterminated
@@ -436,10 +443,21 @@ begin
     PythonExePath := 'python.exe';
   end;
 
-  // Persist so [Run] entries and [Icons] shortcuts can read it from the registry
-  RegWriteStringValue(HKLM, 'SOFTWARE\{#MyAppName}', 'PythonExe',  PythonExePath);
-  RegWriteStringValue(HKLM, 'SOFTWARE\{#MyAppName}', 'PythonwExe',
-    ExtractFilePath(PythonExePath) + 'pythonw.exe');
+  // FIX: Guard the PythonwExe write against the bare-name fallback.
+  // When PythonExePath = 'python.exe', ExtractFilePath() returns '' so
+  // PythonwExe would be written as the bare string 'pythonw.exe'.
+  // CreateProcess with a bare name fails with ERROR_ACCESS_DENIED (code 5)
+  // in an elevated installer session where the session PATH is stripped.
+  // We only derive the path from ExtractFilePath when fully-qualified.
+  RegWriteStringValue(HKLM, 'SOFTWARE\{#MyAppName}', 'PythonExe', PythonExePath);
+  if ExtractFilePath(PythonExePath) <> '' then
+    RegWriteStringValue(HKLM, 'SOFTWARE\{#MyAppName}', 'PythonwExe',
+      ExtractFilePath(PythonExePath) + 'pythonw.exe')
+  else begin
+    Log('WARNING: PythonExePath is a bare name — PythonwExe will also be bare.' +
+        ' GUI shortcut may fail to launch on some systems.');
+    RegWriteStringValue(HKLM, 'SOFTWARE\{#MyAppName}', 'PythonwExe', 'pythonw.exe');
+  end;
 end;
 
 // ── Pre-install: ensure Python 3.12 exists, resolve its path ─
