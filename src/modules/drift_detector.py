@@ -55,12 +55,20 @@ CREATE TABLE IF NOT EXISTS ml_score_log (
 )
 """
 
+_CREATE_DETECTOR_STATE_TABLE = """
+CREATE TABLE IF NOT EXISTS detector_state (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+)
+"""
+
 def _ensure_tables():
     """Creates drift detection tables if they do not exist."""
     try:
         with sqlite3.connect(utils.DB_FILE) as conn:
             conn.execute(_CREATE_DRIFT_TABLE)
             conn.execute(_CREATE_SCORE_LOG_TABLE)
+            conn.execute(_CREATE_DETECTOR_STATE_TABLE)
     except sqlite3.Error as e:
         print(f"[-] DriftDetector: Table creation failed: {e}")
 
@@ -83,6 +91,69 @@ class DriftDetector:
         self._ph_n     = 0      # Observation count
         self._ph_mean  = 0.0    # Running reference mean
         self._alerted  = False  # Prevent alert spam
+        self._restore_state_from_db()  # Rebuild in-memory state from DB on startup
+
+    def _restore_state_from_db(self):
+        """
+        Replays ml_score_log to reconstruct the PH in-memory state after a
+        process restart. Without this, the GUI always shows 0 observations
+        because __init__ starts fresh even though the DB has historical data.
+
+        Only replays scores logged AFTER the last reset_after_retrain() call
+        so that a retrain + restart doesn't incorrectly restore a stale alert.
+        """
+        try:
+            with sqlite3.connect(utils.DB_FILE) as conn:
+                # Find the timestamp of the last retrain reset (if any)
+                row = conn.execute(
+                    "SELECT value FROM detector_state WHERE key = 'last_reset_at'"
+                ).fetchone()
+                last_reset_at = row[0] if row else None
+
+                # Check whether there is an unresolved drift alert since last reset
+                if last_reset_at:
+                    alert_row = conn.execute(
+                        "SELECT COUNT(*) FROM drift_alerts WHERE timestamp > ?",
+                        (last_reset_at,)
+                    ).fetchone()
+                else:
+                    alert_row = conn.execute(
+                        "SELECT COUNT(*) FROM drift_alerts"
+                    ).fetchone()
+                if alert_row and alert_row[0] > 0:
+                    self._alerted = True
+
+                # Replay only the scores logged after the last reset
+                if last_reset_at:
+                    rows = conn.execute(
+                        """
+                        SELECT score FROM ml_score_log
+                        WHERE verdict IN ('CRITICAL RISK', 'SUSPICIOUS')
+                          AND timestamp > ?
+                        ORDER BY timestamp ASC
+                        """,
+                        (last_reset_at,)
+                    ).fetchall()
+                else:
+                    rows = conn.execute(
+                        """
+                        SELECT score FROM ml_score_log
+                        WHERE verdict IN ('CRITICAL RISK', 'SUSPICIOUS')
+                        ORDER BY timestamp ASC
+                        """
+                    ).fetchall()
+
+            # Replay the PH algorithm over the recovered score stream
+            for (score,) in rows:
+                self._ph_n    += 1
+                self._ph_mean  = self._ph_mean + (score - self._ph_mean) / self._ph_n
+                if self._ph_n >= MIN_REFERENCE_WINDOW:
+                    self._ph_sum += (score - self._ph_mean - PH_DELTA)
+                    self._ph_min  = min(self._ph_min, self._ph_sum)
+
+        except Exception as e:
+            # Non-critical: fresh zero state is always a safe fallback
+            print(f"[*] DriftDetector: State restore skipped — {e}")
 
     def observe(
         self,
@@ -253,12 +324,29 @@ class DriftDetector:
         Resets the Page-Hinkley state after a successful retraining session.
         Called by AdaptiveLearner after model update so drift detection
         starts fresh against the new model's baseline.
+
+        Persists the reset timestamp to detector_state so that a subsequent
+        process restart replays only post-retrain scores, preventing the old
+        alert from being incorrectly restored.
         """
         self._ph_sum  = 0.0
         self._ph_min  = 0.0
         self._ph_n    = 0
         self._ph_mean = 0.0
         self._alerted = False
+
+        # Persist the reset timestamp so _restore_state_from_db() knows
+        # where to start replaying on the next process startup
+        now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        try:
+            with sqlite3.connect(utils.DB_FILE) as conn:
+                conn.execute(
+                    "INSERT OR REPLACE INTO detector_state (key, value) VALUES (?, ?)",
+                    ("last_reset_at", now)
+                )
+        except sqlite3.Error as e:
+            print(f"[*] DriftDetector: Could not persist reset timestamp — {e}")
+
         print("[*] DriftDetector: State reset after retraining session.")
 
     def get_drift_status(self) -> dict:

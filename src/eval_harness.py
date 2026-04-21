@@ -23,6 +23,27 @@ PE_EXTS     = {".exe", ".dll", ".sys", ".scr", ".cpl", ".ocx"}
 DEFAULT_θ   = 0.50   # standard operating threshold
 
 # ── PERSISTENT SCORE DATABASE  (v2_predictions.db)
+def compute_metrics(predictions: list, theta: float = 0.60) -> dict:
+    """
+    Derives Precision, Recall, F1, FPR, FNR from a list of
+    {'raw_score': float, 'ground_truth': int} dicts.
+    Safe to call with an empty list — returns all-zero metrics.
+    """
+    if not predictions:
+        return {"precision": 0.0, "recall": 0.0, "f1": 0.0, "fpr": 0.0, "fnr": 0.0,
+                "tp": 0, "fp": 0, "tn": 0, "fn": 0}
+    tp = sum(1 for p in predictions if p["raw_score"] >= theta and p["ground_truth"] == 1)
+    fp = sum(1 for p in predictions if p["raw_score"] >= theta and p["ground_truth"] == 0)
+    tn = sum(1 for p in predictions if p["raw_score"] <  theta and p["ground_truth"] == 0)
+    fn = sum(1 for p in predictions if p["raw_score"] <  theta and p["ground_truth"] == 1)
+    precision = tp / (tp + fp) if (tp + fp) > 0 else 0.0
+    recall    = tp / (tp + fn) if (tp + fn) > 0 else 0.0
+    f1        = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0.0
+    fpr       = fp / (fp + tn) if (fp + tn) > 0 else 0.0
+    fnr       = fn / (fn + tp) if (fn + tp) > 0 else 0.0
+    return {"precision": round(precision, 4), "recall": round(recall, 4),
+            "f1": round(f1, 4), "fpr": round(fpr, 4), "fnr": round(fnr, 4),
+            "tp": tp, "fp": fp, "tn": tn, "fn": fn}
 
 def init_pred_db():
     """
