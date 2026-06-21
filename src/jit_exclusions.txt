@@ -1,0 +1,8 @@
+# CyberSentinel JIT Process Exclusions
+# One process name per line (case-insensitive).
+# Processes listed here are excluded from RWX memory scanning
+# because they host JIT compilers (V8, .NET CLR, JVM) that
+# legitimately allocate anonymous RWX memory.
+# Add a process name here when FILELESS-DEBUG tells you to.
+# Example:
+#   myapp.exe

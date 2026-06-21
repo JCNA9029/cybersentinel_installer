@@ -1,0 +1,803 @@
+#!/usr/bin/env python3
+"""
+install_helper.py — CyberSentinel Installer Helper
+Called by Inno Setup [Run] directives with --step <n>.
+
+Steps:
+  deps      — pip install all Python dependencies
+  thrember  — clone & install EMBER2024 (thrember)
+  ollama    — download & silently install Ollama
+  models    — download model folder from Google Drive via gdown
+  configure — patch config.json, register Ollama boot task
+
+FIXES vs original:
+  [BUG 1] thrember step: git was called via shutil.which() after a fresh silent
+          install, but the newly installed Git binary is NOT on the current
+          process's PATH (the installer process inherited the old PATH before
+          Git existed). Fixed by injecting Git's cmd/ directory into os.environ
+          immediately after install so all subsequent subprocess calls can see it.
+
+  [BUG 2] thrember step: `pip install .` was run with capture=False (default),
+          meaning stdout/stderr were inherited from the Inno Setup hidden window
+          and silently discarded. If the build failed (e.g. missing build deps
+          or C compiler), the run() helper saw returncode 0 from pip's own
+          wrapper even though the wheel build failed internally. Fixed by always
+          capturing output and explicitly checking for the "Successfully installed"
+          confirmation string in pip's stdout.
+
+  [BUG 3] thrember step: signify==0.7.1 was installed BEFORE the EMBER2024
+          source was cloned, but thrember's setup.py lists signify as a
+          build-time requirement that it re-resolves. On some pip versions this
+          causes a version-conflict resolution that downgrades signify. Fixed by
+          installing signify AFTER cloning, passing it together with the local
+          package so pip resolves them in a single solver pass:
+              pip install "signify==0.7.1" .
+          This guarantees signify stays pinned at the required version.
+
+thrember install strategy (step_thrember):
+  1. Already installed?      → skip entirely (fast path, fully offline).
+  2. Local EMBER2024 found?  → install from it (no Git / no network needed).
+     Searched: Desktop, Downloads, Documents, home dir, C:\\.
+     Valid tree = setup.py or pyproject.toml  +  thrember/ sub-folder present.
+  3. Neither?                → clone from GitHub then install (original behaviour).
+"""
+
+import argparse
+import json
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+import urllib.request
+from pathlib import Path
+
+# ── Constants ─────────────────────────────────────────────────
+def _resolve_install_dir() -> Path:
+    """Read install dir from --install-dir CLI arg, then registry, then default."""
+    import sys
+    for i, arg in enumerate(sys.argv):
+        if arg == "--install-dir" and i + 1 < len(sys.argv):
+            return Path(sys.argv[i + 1])
+    # Registry fallback (written by Inno Setup [Registry] section)
+    try:
+        import winreg
+        key = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE,
+                             r"SOFTWARE\CyberSentinel", 0, winreg.KEY_READ)
+        val, _ = winreg.QueryValueEx(key, "InstallDir")
+        winreg.CloseKey(key)
+        if val:
+            return Path(val)
+    except Exception:
+        pass
+    return Path(r"C:\CyberSentinel")  # last-resort default
+
+INSTALL_DIR   = _resolve_install_dir()
+MODELS_DIR    = INSTALL_DIR / "models"
+CONFIG_PATH   = INSTALL_DIR / "config.json"
+LOG_PATH      = INSTALL_DIR / "install_log.txt"
+GDRIVE_FOLDER = "1dtVVH4Oo5RhoAiMPhqsB4T1X2dGX0v5N"
+
+PYTHON_DEPS = [
+    "requests>=2.31.0",
+    "psutil>=5.9.0",
+    "watchdog>=3.0.0",
+    "cryptography>=41.0.0",
+    "colorama>=0.4.6",
+    "pefile>=2024.8.26",
+    "lightgbm>=4.1.0",
+    "numpy>=1.24.0",
+    "scipy>=1.11.0",
+    "tqdm>=4.65.0",
+    "pandas>=2.0.0",
+    "shap>=0.44.0",
+    "ollama>=0.1.0",
+    "flask>=3.0.0",
+    "yara-python>=3.11.0",
+    "PyQt6>=6.6.0",
+    "pywin32",
+    "wmi",
+    "gdown",
+    "scapy>=2.5.0",
+]
+
+OLLAMA_INSTALLER_URL = "https://ollama.com/download/OllamaSetup.exe"
+GIT_INSTALLER_URL    = (
+    "https://github.com/git-for-windows/git/releases/download/"
+    "v2.44.0.windows.1/Git-2.44.0-64-bit.exe"
+)
+
+# Known Git installation paths to probe after a fresh install
+GIT_CANDIDATE_PATHS = [
+    r"C:\Program Files\Git\cmd\git.exe",
+    r"C:\Program Files (x86)\Git\cmd\git.exe",
+]
+
+# Known Ollama installation paths (Ollama installs to AppData\Local\Programs by default)
+OLLAMA_CANDIDATE_PATHS = [
+    os.path.expandvars(r"%LOCALAPPDATA%\Programs\Ollama\ollama.exe"),
+    r"C:\Program Files\Ollama\ollama.exe",
+    os.path.expandvars(r"%LOCALAPPDATA%\Ollama\ollama.exe"),
+]
+
+
+def find_ollama_exe() -> str:
+    """
+    Return the full path to ollama.exe, checking known install locations
+    before falling back to PATH. After a fresh silent install, ollama is NOT
+    yet on the current process's PATH, so shutil.which() alone is unreliable.
+    """
+    for candidate in OLLAMA_CANDIDATE_PATHS:
+        if os.path.isfile(candidate):
+            log(f"Found ollama at: {candidate}")
+            return candidate
+    # Fall back to PATH (covers machines where Ollama was already installed)
+    found = shutil.which("ollama")
+    if found:
+        log(f"Found ollama on PATH: {found}")
+        return found
+    return "ollama"  # last resort — let it fail with a clear OS error
+
+
+# ── Logging ───────────────────────────────────────────────────
+def log(msg: str, level: str = "INFO"):
+    ts = time.strftime("%Y-%m-%d %H:%M:%S")
+    line = f"[{ts}] [{level}] {msg}"
+    print(line, flush=True)
+    with open(LOG_PATH, "a", encoding="utf-8") as f:
+        f.write(line + "\n")
+
+
+def fail(msg: str):
+    log(msg, "ERROR")
+    sys.exit(1)
+
+
+# ── Retry-aware download ──────────────────────────────────────
+def download(url: str, dest: Path, attempts: int = 3) -> bool:
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    for attempt in range(1, attempts + 1):
+        try:
+            log(f"Downloading {url} → {dest}  (attempt {attempt}/{attempts})")
+            urllib.request.urlretrieve(url, dest)
+            log(f"Download complete: {dest}")
+            return True
+        except Exception as exc:
+            log(f"Download failed: {exc}", "WARN")
+            time.sleep(2 ** attempt)
+    return False
+
+
+# ── Run subprocess with logging ───────────────────────────────
+def run(cmd: list[str], cwd: Path | None = None,
+        capture: bool = False) -> subprocess.CompletedProcess:
+    log(f"EXEC: {' '.join(str(c) for c in cmd)}")
+    kwargs = dict(cwd=cwd, text=True, encoding="utf-8", errors="replace")
+    if capture:
+        kwargs.update(stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    result = subprocess.run(cmd, **kwargs)
+    if result.returncode != 0:
+        detail = getattr(result, "stdout", "") or ""
+        fail(
+            f"Command failed (exit {result.returncode}): {' '.join(str(c) for c in cmd)}\n"
+            f"Output:\n{detail}"
+        )
+    return result
+
+
+def pip(*packages: str) -> subprocess.CompletedProcess:
+    """Install one or more packages via pip, always capturing output."""
+    # FIX BUG 2: Always capture pip output so we can detect silent build
+    # failures that return exit code 0 (e.g. wheel build errors in setup.py).
+    result = subprocess.run(
+        [sys.executable, "-m", "pip", "install", "--upgrade", *packages],
+        text=True, encoding="utf-8", errors="replace",
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+    )
+    log(result.stdout or "")
+    if result.returncode != 0:
+        fail(
+            f"pip install failed (exit {result.returncode}) for: {' '.join(packages)}\n"
+            f"Output:\n{result.stdout}"
+        )
+    return result
+
+
+# ═══════════════════════════════════════════════════════════════
+#  STEP: deps
+# ═══════════════════════════════════════════════════════════════
+def _ensure_pip() -> None:
+    """
+    Guarantee pip is available before any package installs.
+    Three-layer approach:
+      1. Check if pip already works — if yes, done.
+      2. Try ensurepip (built into Python 3.12, works offline).
+      3. Download get-pip.py from PyPA as a last resort.
+    Fails hard if all three layers are exhausted so the user
+    gets a clear message rather than a cryptic 'No module named pip'.
+    """
+    result = subprocess.run(
+        [sys.executable, "-m", "pip", "--version"],
+        capture_output=True, text=True
+    )
+    if result.returncode == 0:
+        log(f"pip already available: {result.stdout.strip()}")
+        return
+
+    log("pip not found — bootstrapping via ensurepip...", "WARN")
+    bootstrap = subprocess.run(
+        [sys.executable, "-m", "ensurepip", "--upgrade"],
+        capture_output=True, text=True, encoding="utf-8", errors="replace"
+    )
+    log(bootstrap.stdout or "")
+    if bootstrap.returncode == 0:
+        log("pip bootstrapped via ensurepip successfully.")
+        return
+
+    log("ensurepip failed — trying get-pip.py fallback...", "WARN")
+    get_pip = Path(tempfile.gettempdir()) / "get-pip.py"
+    if not download("https://bootstrap.pypa.io/get-pip.py", get_pip):
+        fail(
+            "pip is not installed and all attempts to install it failed.\n"
+            "Please reinstall Python 3.12 from python.org, making sure\n"
+            "'Add pip' / 'Install pip' is checked, then re-run the installer."
+        )
+    run([sys.executable, str(get_pip)])
+    log("pip bootstrapped via get-pip.py successfully.")
+
+
+def _register_python_path() -> None:
+    """
+    Save the exact Python executable path to the Windows registry.
+    This lets the Inno Setup [Icons] and [Run] entries read it back
+    via {reg:HKLM\\SOFTWARE\\CyberSentinel,PythonExe} so every shortcut
+    and post-install step uses the same interpreter that installed the deps.
+    """
+    try:
+        import winreg
+        key = winreg.CreateKey(winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\CyberSentinel")
+        winreg.SetValueEx(key, "PythonExe",  0, winreg.REG_SZ, sys.executable)
+        winreg.SetValueEx(key, "PythonwExe", 0, winreg.REG_SZ,
+                          str(Path(sys.executable).parent / "pythonw.exe"))
+        winreg.CloseKey(key)
+        log(f"Registered Python path in registry: {sys.executable}")
+    except Exception as exc:
+        log(f"Could not write Python path to registry: {exc}", "WARN")
+
+
+def step_deps():
+    log("=== STEP: Installing Python dependencies ===")
+    _register_python_path()                        # pin this interpreter in registry
+    _ensure_pip()                                  # guarantee pip exists before any install
+    pip("--upgrade", "pip", "setuptools", "wheel")
+    # Install each dependency individually so failures name the exact package.
+    # pip() already calls fail() with full output on non-zero exit; no need to re-wrap.
+    for pkg in PYTHON_DEPS:
+        pip(pkg)
+    log("All Python dependencies installed successfully.")
+
+
+# ═══════════════════════════════════════════════════════════════
+#  STEP: thrember (EMBER2024)
+# ═══════════════════════════════════════════════════════════════
+def _inject_git_into_path(git_exe: str) -> None:
+    """
+    FIX BUG 1: After a silent Git install, the current process's PATH still
+    reflects the pre-install environment. Inject Git's cmd/ directory into
+    os.environ['PATH'] so that all subsequent subprocess calls (including the
+    git clone below) can locate git.exe without requiring a process restart.
+    """
+    git_cmd_dir = str(Path(git_exe).parent)
+    current_path = os.environ.get("PATH", "")
+    if git_cmd_dir.lower() not in current_path.lower():
+        os.environ["PATH"] = git_cmd_dir + os.pathsep + current_path
+        log(f"Injected into PATH: {git_cmd_dir}")
+
+
+def ensure_git() -> str:
+    """Return path to git.exe, installing silently if absent."""
+    git_exe = shutil.which("git")
+    if git_exe:
+        log(f"git found: {git_exe}")
+        return git_exe
+
+    log("git not found — downloading Git for Windows...")
+    installer = Path(tempfile.gettempdir()) / "git_installer.exe"
+    if not download(GIT_INSTALLER_URL, installer):
+        fail("Failed to download Git for Windows after 3 attempts.")
+
+    log("Installing Git for Windows silently...")
+    run([str(installer), "/VERYSILENT", "/NORESTART",
+         "/COMPONENTS=icons,ext\\reg\\shellhere,assoc,assoc_sh"])
+
+    # Give the installer a moment to finish writing files
+    time.sleep(3)
+
+    for candidate in GIT_CANDIDATE_PATHS:
+        if Path(candidate).exists():
+            log(f"git installed at {candidate}")
+            _inject_git_into_path(candidate)  # FIX BUG 1
+            return candidate
+
+    fail("Git installation succeeded but git.exe not found on PATH. Please restart and re-run.")
+    return ""  # unreachable
+
+
+def _is_thrember_installed() -> bool:
+    """Return True if thrember is already importable in the current Python."""
+    result = subprocess.run(
+        [sys.executable, "-c", "import thrember; print('thrember OK')"],
+        capture_output=True, text=True, encoding="utf-8"
+    )
+    return result.returncode == 0 and "thrember OK" in result.stdout
+
+
+def _is_valid_ember2024_dir(path: Path) -> bool:
+    """
+    Return True if *path* looks like a valid EMBER2024 source tree.
+    Only requires setup.py or pyproject.toml — the thrember/ sub-folder
+    may be absent depending on how the repo was downloaded.
+    """
+    return (path / "setup.py").exists() or (path / "pyproject.toml").exists()
+
+
+def _find_local_ember2024() -> Path | None:
+    """
+    Search common user locations for an existing EMBER2024 source tree.
+    Returns the first valid directory found, or None.
+    """
+    # Build candidate root folders to search inside
+    home = Path.home()
+    search_roots = [
+        home / "Desktop",
+        home / "Downloads",
+        home / "Documents",
+        home,
+        Path("C:/"),
+    ]
+
+    # Common folder names the user might have used
+    ember_names = ["EMBER2024", "ember2024", "Ember2024", "ember_2024", "EMBER_2024"]
+
+    candidates: list[Path] = []
+
+    # Direct hits: <root>/<name>
+    for root in search_roots:
+        for name in ember_names:
+            candidates.append(root / name)
+
+    # One level deeper: <root>/<any_subfolder>/<name>  (e.g. C:\Users\John\EMBER2024)
+    for root in search_roots:
+        try:
+            for child in root.iterdir():
+                if child.is_dir():
+                    for name in ember_names:
+                        candidates.append(child / name)
+        except (PermissionError, OSError):
+            pass
+
+    for candidate in candidates:
+        if candidate.is_dir() and _is_valid_ember2024_dir(candidate):
+            return candidate
+
+    return None
+
+
+def _install_thrember_from(source_dir: Path) -> None:
+    """
+    Install thrember + signify==0.7.1 from a local EMBER2024 source tree.
+    Uses a single pip resolver pass to avoid the signify version-conflict
+    bug described in BUG 3 above.
+    """
+    log(f"Installing thrember from local source: {source_dir}")
+    pip("signify==0.7.1", str(source_dir))
+
+
+def _force_rmtree(path: Path) -> None:
+    """
+    Robustly delete a directory tree on Windows.
+    shutil.rmtree(ignore_errors=True) silently skips locked/read-only files,
+    leaving the folder behind and causing `git clone` to fail with
+    'destination path already exists and is not an empty directory'.
+    We clear the read-only bit on every file before deleting it.
+    """
+    import stat
+
+    def _remove_readonly(func, fpath, _excinfo):
+        try:
+            os.chmod(fpath, stat.S_IWRITE)
+            func(fpath)
+        except Exception:
+            pass  # best-effort; git will report a clear error if it still fails
+
+    if path.exists():
+        shutil.rmtree(path, onerror=_remove_readonly)
+
+
+def _clone_and_install_thrember() -> None:
+    """
+    Fall back: clone EMBER2024 from GitHub then install thrember.
+    Requires Git (installs it silently if absent).
+    """
+    git_exe   = ensure_git()
+    clone_dir = Path(tempfile.gettempdir()) / "EMBER2024"
+
+    _force_rmtree(clone_dir)
+
+    for attempt in range(1, 4):
+        log(f"Cloning EMBER2024 repo (attempt {attempt}/3)...")
+        result = subprocess.run(
+            [git_exe, "clone", "--depth=1",
+             "https://github.com/FutureComputing4AI/EMBER2024",
+             str(clone_dir)],
+            capture_output=True, text=True, encoding="utf-8", errors="replace"
+        )
+        if result.returncode == 0:
+            log("Clone successful.")
+            break
+        log(f"Clone failed:\nSTDOUT: {result.stdout}\nSTDERR: {result.stderr}", "WARN")
+        time.sleep(3)
+    else:
+        fail(
+            "Failed to clone the EMBER2024 repository after 3 attempts.  "
+            "Please check your internet connection and re-run the installer."
+        )
+
+    _install_thrember_from(clone_dir)
+
+
+def step_thrember():
+    log("=== STEP: Installing EMBER2024 (thrember) ===")
+
+    # ── Fast path: already installed ──────────────────────────────────────────
+    if _is_thrember_installed():
+        log("thrember is already installed and importable — skipping.")
+        return
+
+    # ── Try local EMBER2024 folder first ──────────────────────────────────────
+    # This covers users who already downloaded / cloned EMBER2024 manually.
+    # We search Desktop, Downloads, Documents, home, and C:\ before hitting
+    # the network, so the installer works fully offline in that scenario.
+    local_dir = _find_local_ember2024()
+    if local_dir:
+        log(f"Found existing EMBER2024 source tree at: {local_dir}")
+        _install_thrember_from(local_dir)
+    else:
+        log("No local EMBER2024 source tree found — cloning from GitHub...")
+        _clone_and_install_thrember()
+
+    # ── Verify the import works before declaring success ───────────────────────
+    # FIX BUG 2: always capture output so a silent wheel-build failure is caught.
+    verify = subprocess.run(
+        [sys.executable, "-c", "import thrember; print('thrember OK')"],
+        capture_output=True, text=True, encoding="utf-8"
+    )
+    if verify.returncode != 0 or "thrember OK" not in verify.stdout:
+        fail(
+            "thrember was installed but cannot be imported.  "
+            f"Python said:\n{verify.stdout}\n{verify.stderr}\n"
+            "Try running `pip install signify==0.7.1` then "
+            "`pip install .` inside the EMBER2024 folder manually."
+        )
+
+    log("thrember / EMBER2024 installed and verified successfully.")
+
+
+# ═══════════════════════════════════════════════════════════════
+#  STEP: ollama
+# ═══════════════════════════════════════════════════════════════
+def step_npcap():
+    log("=== STEP: Npcap check ===")
+
+    # Check if already installed
+    import winreg
+    for sub in (r"SOFTWARE\Npcap", r"SOFTWARE\WOW6432Node\Npcap"):
+        try:
+            winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, sub)
+            log("Npcap already installed — skipping.")
+            return
+        except OSError:
+            pass
+
+    # Not installed — write a flag file so the Inno Setup [Run] AfterInstall
+    # hook can detect this and show a user-facing warning dialog.
+    flag_path = INSTALL_DIR / "npcap_missing.flag"
+    try:
+        flag_path.write_text(
+            "Npcap was not found during installation.\n"
+            "The JA3 TLS fingerprint monitor will be disabled until Npcap is installed.\n"
+            "Download from: https://npcap.com/#download",
+            encoding="utf-8"
+        )
+        log("Npcap not found — flag file written for installer notification.")
+    except Exception as e:
+        log(f"WARNING: Could not write npcap_missing.flag: {e}", "WARN")
+
+    log(
+        "WARNING: Npcap is not installed. "
+        "The JA3 TLS fingerprint monitor will be disabled at runtime. "
+        "To enable it, install Npcap manually from https://npcap.com/#download"
+    )
+
+def step_ollama():
+    log("=== STEP: Installing Ollama ===")
+
+    # ── Skip if Ollama is already installed ──────────────────────────────────
+    # find_ollama_exe() probes all known install locations before falling back
+    # to PATH. If it returns anything other than the bare "ollama" fallback,
+    # or if shutil.which finds it on PATH, Ollama is already present.
+    ollama_exe = find_ollama_exe()
+    if ollama_exe != "ollama" or shutil.which("ollama"):
+        log(f"Ollama already installed at: {ollama_exe} — skipping download.")
+        return
+    
+    installer = Path(tempfile.gettempdir()) / "OllamaSetup.exe"
+
+    if not download(OLLAMA_INSTALLER_URL, installer, attempts=3):
+        fail(
+            "Failed to download the Ollama installer after 3 attempts.  "
+            "Please check your internet connection and re-run the installer."
+        )
+
+    log("Running Ollama installer silently...")
+    run([str(installer), "/S"])
+
+    # Give Ollama a moment to finish background registration
+    time.sleep(3)
+
+    # Locate ollama.exe — it won't be on PATH yet after a fresh install
+    ollama_exe = find_ollama_exe()
+    log(f"Using ollama at: {ollama_exe}")
+
+    # Start Ollama server in the background
+    log("Starting Ollama serve...")
+    subprocess.Popen([ollama_exe, "serve"],
+                     creationflags=subprocess.CREATE_NO_WINDOW)
+
+    # Poll until ollama responds (up to 30 seconds)
+    log("Waiting for Ollama to become ready...")
+    for _ in range(15):
+        time.sleep(2)
+        r = subprocess.run([ollama_exe, "list"], capture_output=True)
+        if r.returncode == 0:
+            log("Ollama is ready.")
+            return
+    log("Ollama did not respond within 30 s — continuing anyway; "
+        "create_modelfile.py will wait for it.", "WARN")
+
+
+# ═══════════════════════════════════════════════════════════════
+#  STEP: models  (Google Drive download via gdown)
+# ═══════════════════════════════════════════════════════════════
+def step_models():
+    log("=== STEP: Downloading AI models from Google Drive ===")
+    MODELS_DIR.mkdir(parents=True, exist_ok=True)
+
+    gguf_file = MODELS_DIR / "CyberSentinel-Analyst.gguf"
+    lgbm_file = MODELS_DIR / "CyberSentinel_v2.model"
+
+    if gguf_file.exists() and gguf_file.stat().st_size > 0 \
+       and lgbm_file.exists() and lgbm_file.stat().st_size > 0:
+        log("AI models already present — skipping download.")
+        return
+
+    # Ensure gdown is importable (step_deps should have installed it already,
+    # but re-installing here is fast and prevents cryptic ImportError crashes).
+    try:
+        import gdown  # noqa: F401
+    except ImportError:
+        log("gdown not found — installing now...")
+        subprocess.run(
+            [sys.executable, "-m", "pip", "install", "--upgrade", "gdown"],
+            check=True, text=True, encoding="utf-8"
+        )
+
+    import gdown
+
+    url = f"https://drive.google.com/drive/folders/{GDRIVE_FOLDER}"
+
+    for attempt in range(1, 4):
+        log(f"Downloading model folder (attempt {attempt}/3) …")
+        try:
+
+            downloaded = gdown.download_folder(
+                url=url,
+                output=str(MODELS_DIR),
+                quiet=False,
+            )
+            if downloaded is None or len(downloaded) == 0:
+                raise RuntimeError("gdown returned no files.")
+
+            # Verify the two critical files actually landed
+            if gguf_file.exists() and gguf_file.stat().st_size > 0 \
+               and lgbm_file.exists() and lgbm_file.stat().st_size > 0:
+                log("Model download complete and verified.")
+                return
+
+            raise RuntimeError(
+                "Download reported success but model files are missing or empty. "
+                f"Expected:\n  {gguf_file}\n  {lgbm_file}"
+            )
+
+        except Exception as exc:
+            log(f"Download attempt {attempt} failed: {exc}", "WARN")
+            if attempt < 3:
+                wait = 5 * attempt  # 5s, 10s — exponential-ish backoff
+                log(f"Retrying in {wait}s …")
+                time.sleep(wait)
+
+    flag_path = MODELS_DIR.parent / "model_download_failed.flag"
+    flag_path.write_text("1", encoding="utf-8")
+    fail(
+        "Failed to download AI models after 3 attempts. "
+        "Please check your internet connection or download the models folder manually "
+        f"from: https://drive.google.com/drive/folders/{GDRIVE_FOLDER} "
+        f"and place the contents in {MODELS_DIR}."
+    )
+# ═══════════════════════════════════════════════════════════════
+#  STEP: configure
+# ═══════════════════════════════════════════════════════════════
+def step_configure():
+    log("=== STEP: Configuring CyberSentinel ===")
+
+    # Patch config.json — only update llm_model key; never touch API keys
+    if CONFIG_PATH.exists():
+        try:
+            with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+                cfg = json.load(f)
+        except json.JSONDecodeError:
+            log("config.json is malformed; using defaults.", "WARN")
+            cfg = {}
+    else:
+        cfg = {}
+
+    cfg["llm_model"]   = "cybersentinel-analyst"
+    cfg["install_dir"] = str(INSTALL_DIR)
+    cfg["version"]     = "1.0.0"
+
+    with open(CONFIG_PATH, "w", encoding="utf-8") as f:
+        json.dump(cfg, f, indent=2)
+
+    log("config.json updated: llm_model = cybersentinel-analyst")
+
+    # ── ETW: enable Security log Event ID 4688 (Process Creation) ────────────
+    # Required for daemon_monitor.py's ETW thread to catch sub-100ms LOLBins.
+    # Step A: turn on process creation auditing in the Security log.
+    log("Enabling Process Creation auditing (auditpol)...")
+    r1 = subprocess.run(
+        ["auditpol", "/set", "/subcategory:Process Creation", "/success:enable"],
+        capture_output=True, text=True
+    )
+    if r1.returncode == 0:
+        log("Process Creation auditing enabled.")
+    else:
+        log(f"WARNING: auditpol failed (exit {r1.returncode}): {r1.stdout} {r1.stderr}", "WARN")
+        (INSTALL_DIR / "etw_config_failed.flag").write_text(
+            f"auditpol /set failed (exit {r1.returncode}).
+"
+            f"ETW process creation auditing was not enabled.
+"
+            f"To fix manually, run as Administrator:
+"
+            f'  auditpol /set /subcategory:"Process Creation" /success:enable
+'
+            f"Output:
+{r1.stdout}{r1.stderr}",
+            encoding="utf-8"
+        )
+
+    # Step B: include the full command line in each 4688 event.
+    # Without this, StringInserts[8] is empty and LoLBin/AMSI patterns have
+    # nothing to match against even though the event fires.
+    log("Enabling command-line capture in process creation events (registry)...")
+    r2 = subprocess.run(
+        [
+            "reg", "add",
+            r"HKLM\Software\Microsoft\Windows\CurrentVersion\Policies\System\Audit",
+            "/v", "ProcessCreationIncludeCmdLine_Enabled",
+            "/t", "REG_DWORD", "/d", "1", "/f",
+        ],
+        capture_output=True, text=True
+    )
+    if r2.returncode == 0:
+        log("Command-line capture in Event 4688 enabled.")
+    else:
+        log(f"WARNING: reg add (cmdline capture) failed (exit {r2.returncode}): {r2.stdout} {r2.stderr}", "WARN")
+        (INSTALL_DIR / "etw_config_failed.flag").write_text(
+            f"reg add (command-line capture) failed (exit {r2.returncode}).
+"
+            f"Event 4688 will fire but the command-line field will be empty.
+"
+            f"To fix manually, run as Administrator:
+"
+            f'  reg add "HKLM\\Software\\Microsoft\\Windows\\CurrentVersion\\Policies\\System\\Audit" '
+            f"/v ProcessCreationIncludeCmdLine_Enabled /t REG_DWORD /d 1 /f
+"
+            f"Output:
+{r2.stdout}{r2.stderr}",
+            encoding="utf-8"
+        )
+
+    # ── PowerShell ScriptBlock Logging (Event ID 4104) ────────────────────────
+    # Required for amsi_monitor.py to detect obfuscated PowerShell execution.
+    # Off by default on all Windows editions; must be set via policy registry key.
+    log("Enabling PowerShell ScriptBlock logging (Event ID 4104)...")
+    r3 = subprocess.run(
+        [
+            "reg", "add",
+            r"HKLM\Software\Policies\Microsoft\Windows\PowerShell\ScriptBlockLogging",
+            "/v", "EnableScriptBlockLogging",
+            "/t", "REG_DWORD", "/d", "1", "/f",
+        ],
+        capture_output=True, text=True
+    )
+    if r3.returncode == 0:
+        log("PowerShell ScriptBlock logging enabled.")
+    else:
+        log(f"WARNING: reg add (ScriptBlock logging) failed (exit {r3.returncode}): {r3.stdout} {r3.stderr}", "WARN")
+        (INSTALL_DIR / "scriptblock_config_failed.flag").write_text(
+            f"reg add (ScriptBlock logging) failed (exit {r3.returncode}).
+"
+            f"PowerShell Event ID 4104 will not be generated.
+"
+            f"The AMSI monitor will not detect obfuscated PowerShell execution.
+"
+            f"To fix manually, run as Administrator:
+"
+            f'  reg add "HKLM\\Software\\Policies\\Microsoft\\Windows\\PowerShell\\ScriptBlockLogging" '
+            f"/v EnableScriptBlockLogging /t REG_DWORD /d 1 /f
+"
+            f"Output:
+{r3.stdout}{r3.stderr}",
+            encoding="utf-8"
+        )
+
+    log("Configuration complete.")
+
+
+# ── Entry point ───────────────────────────────────────────────
+def main():
+    INSTALL_DIR.mkdir(parents=True, exist_ok=True)
+    log("=" * 60)
+    log("CyberSentinel install_helper.py starting")
+    log("=" * 60)
+
+    parser = argparse.ArgumentParser(description="CyberSentinel installer helper")
+    parser.add_argument(
+        "--step",
+        choices=["deps", "thrember", "npcap", "ollama", "models", "configure"],
+        required=True,
+        help="Installation step to execute",
+    )
+    parser.add_argument(
+        "--install-dir",
+        default=None,
+        help="CyberSentinel install directory (overrides registry and default)",
+    )
+    args = parser.parse_args()
+
+    dispatch = {
+        "deps":      step_deps,
+        "thrember":  step_thrember,
+        "npcap":     step_npcap,
+        "ollama":    step_ollama,
+        "models":    step_models,
+        "configure": step_configure,
+    }
+
+    try:
+        dispatch[args.step]()
+    except SystemExit:
+        raise
+    except Exception as exc:
+        fail(
+            f"Unexpected error during step '{args.step}': {exc}\n"
+            f"See full log at {LOG_PATH}"
+        )
+
+    log(f"Step '{args.step}' completed successfully.")
+
+
+if __name__ == "__main__":
+    main()

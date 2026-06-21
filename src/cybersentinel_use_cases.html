@@ -1,0 +1,1242 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CyberSentinel — Use Case Reference</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@300;400;500;600&display=swap');
+
+  :root {
+    --bg: #0c0e14;
+    --bg-card: #13161f;
+    --bg-card2: #181c28;
+    --border: rgba(255,255,255,0.07);
+    --border-accent: rgba(255,255,255,0.14);
+    --text: #e8eaf0;
+    --muted: #7a7f96;
+    --dim: #444858;
+
+    --cli:    #4fa3e3;
+    --gui:    #7bc97e;
+    --daemon: #e07b3a;
+    --soc:    #b07cf8;
+    --siem:   #e8b84b;
+    --eval:   #e05f7b;
+
+    --cli-bg:    rgba(79,163,227,0.08);
+    --gui-bg:    rgba(123,201,126,0.08);
+    --daemon-bg: rgba(224,123,58,0.08);
+    --soc-bg:    rgba(176,124,248,0.08);
+    --siem-bg:   rgba(232,184,75,0.08);
+    --eval-bg:   rgba(224,95,123,0.08);
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    font-family: 'IBM Plex Sans', sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    font-size: 14px;
+    line-height: 1.7;
+    padding: 48px 24px 80px;
+    max-width: 1100px;
+    margin: 0 auto;
+  }
+
+  /* ── HEADER ── */
+  .header {
+    border-left: 3px solid var(--cli);
+    padding-left: 20px;
+    margin-bottom: 52px;
+  }
+  .header .label {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 11px;
+    letter-spacing: 2px;
+    color: var(--muted);
+    text-transform: uppercase;
+    margin-bottom: 6px;
+  }
+  .header h1 {
+    font-size: 32px;
+    font-weight: 600;
+    color: var(--text);
+    margin-bottom: 6px;
+  }
+  .header p {
+    color: var(--muted);
+    font-size: 14px;
+  }
+
+  /* ── MODE LEGEND ── */
+  .legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    margin-bottom: 48px;
+  }
+  .legend-pill {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 5px 14px;
+    border-radius: 100px;
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 11px;
+    font-weight: 500;
+    letter-spacing: 0.5px;
+    border: 1px solid;
+  }
+  .legend-dot { width: 7px; height: 7px; border-radius: 50%; }
+
+  /* ── SECTION ── */
+  .section { margin-bottom: 52px; }
+
+  .section-header {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    margin-bottom: 6px;
+    padding-bottom: 14px;
+    border-bottom: 1px solid var(--border);
+  }
+  .mode-badge {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 1.5px;
+    text-transform: uppercase;
+    padding: 3px 10px;
+    border-radius: 4px;
+    border: 1px solid;
+    white-space: nowrap;
+  }
+  .section-title {
+    font-size: 20px;
+    font-weight: 500;
+    color: var(--text);
+  }
+  .section-sub {
+    font-size: 13px;
+    color: var(--muted);
+    margin-bottom: 20px;
+    padding-left: 2px;
+  }
+  .entry-point {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 11px;
+    color: var(--muted);
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    display: inline-block;
+    padding: 2px 10px;
+    border-radius: 4px;
+    margin-bottom: 20px;
+  }
+
+  /* ── USE CASE GRID ── */
+  .uc-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(310px, 1fr));
+    gap: 14px;
+  }
+
+  .uc-card {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 16px 18px;
+    transition: border-color 0.18s;
+  }
+  .uc-card:hover { border-color: var(--border-accent); }
+
+  .uc-card-header {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    margin-bottom: 8px;
+  }
+  .uc-icon {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 11px;
+    font-weight: 600;
+    padding: 2px 7px;
+    border-radius: 4px;
+    white-space: nowrap;
+    flex-shrink: 0;
+    margin-top: 2px;
+  }
+  .uc-name {
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--text);
+    line-height: 1.4;
+  }
+  .uc-desc {
+    font-size: 12.5px;
+    color: var(--muted);
+    line-height: 1.65;
+    margin-bottom: 10px;
+  }
+  .uc-scenarios {
+    border-top: 1px solid var(--border);
+    padding-top: 9px;
+  }
+  .uc-scenarios-label {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 10px;
+    letter-spacing: 1px;
+    color: var(--dim);
+    text-transform: uppercase;
+    margin-bottom: 5px;
+  }
+  .uc-scenario {
+    font-size: 12px;
+    color: var(--muted);
+    padding: 2px 0 2px 12px;
+    position: relative;
+    line-height: 1.5;
+  }
+  .uc-scenario::before {
+    content: '›';
+    position: absolute;
+    left: 0;
+    color: var(--dim);
+  }
+  .uc-mitre {
+    margin-top: 8px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 5px;
+  }
+  .mitre-tag {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 10px;
+    padding: 1px 6px;
+    border-radius: 3px;
+    background: rgba(255,255,255,0.04);
+    border: 1px solid var(--border);
+    color: var(--dim);
+  }
+
+  /* ── CLI FLAGS TABLE ── */
+  .flags-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+    margin-top: 20px;
+  }
+  .flags-table th {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 10px;
+    letter-spacing: 1.5px;
+    text-transform: uppercase;
+    color: var(--dim);
+    text-align: left;
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--border);
+    font-weight: 500;
+  }
+  .flags-table td {
+    padding: 9px 12px;
+    border-bottom: 1px solid var(--border);
+    vertical-align: top;
+  }
+  .flags-table tr:last-child td { border-bottom: none; }
+  .flags-table td:first-child {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 11.5px;
+    color: var(--cli);
+    white-space: nowrap;
+  }
+  .flags-table td:nth-child(2) { color: var(--muted); }
+  .flags-table td:nth-child(3) { color: var(--text); font-size: 12.5px; }
+
+  /* ── DAEMON THREADS ── */
+  .thread-list {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    margin-top: 4px;
+  }
+  .thread-row {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 12px 16px;
+    display: grid;
+    grid-template-columns: 80px 1fr;
+    gap: 14px;
+    align-items: start;
+  }
+  .thread-num {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--daemon);
+    padding-top: 2px;
+  }
+  .thread-name {
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--text);
+    margin-bottom: 3px;
+  }
+  .thread-desc {
+    font-size: 12.5px;
+    color: var(--muted);
+    margin-bottom: 6px;
+  }
+
+  /* ── COLOR HELPERS ── */
+  .cli-color    { color: var(--cli); }
+  .gui-color    { color: var(--gui); }
+  .daemon-color { color: var(--daemon); }
+  .soc-color    { color: var(--soc); }
+  .siem-color   { color: var(--siem); }
+  .eval-color   { color: var(--eval); }
+
+  .cli-badge    { background: var(--cli-bg);    border-color: var(--cli);    color: var(--cli); }
+  .gui-badge    { background: var(--gui-bg);    border-color: var(--gui);    color: var(--gui); }
+  .daemon-badge { background: var(--daemon-bg); border-color: var(--daemon); color: var(--daemon); }
+  .soc-badge    { background: var(--soc-bg);    border-color: var(--soc);    color: var(--soc); }
+  .siem-badge   { background: var(--siem-bg);   border-color: var(--siem);   color: var(--siem); }
+  .eval-badge   { background: var(--eval-bg);   border-color: var(--eval);   color: var(--eval); }
+
+  .cli-icon    { background: var(--cli-bg);    color: var(--cli); }
+  .gui-icon    { background: var(--gui-bg);    color: var(--gui); }
+  .daemon-icon { background: var(--daemon-bg); color: var(--daemon); }
+  .soc-icon    { background: var(--soc-bg);    color: var(--soc); }
+  .siem-icon   { background: var(--siem-bg);   color: var(--siem); }
+  .eval-icon   { background: var(--eval-bg);   color: var(--eval); }
+
+  .divider {
+    border: none;
+    border-top: 1px solid var(--border);
+    margin: 48px 0;
+  }
+
+  @media (max-width: 600px) {
+    .uc-grid { grid-template-columns: 1fr; }
+    .thread-row { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+
+<!-- HEADER -->
+<div class="header">
+  <div class="label">CyberSentinel v1 · EDR Framework</div>
+  <h1>Use Case Reference</h1>
+  <p>All use cases across every interface and operational mode — CLI, GUI, Daemon, SOC Dashboard, SIEM Export, and Evaluation Harness.</p>
+</div>
+
+<!-- LEGEND -->
+<div class="legend">
+  <div class="legend-pill cli-badge"><div class="legend-dot" style="background:var(--cli)"></div>CLI</div>
+  <div class="legend-pill gui-badge"><div class="legend-dot" style="background:var(--gui)"></div>GUI</div>
+  <div class="legend-pill daemon-badge"><div class="legend-dot" style="background:var(--daemon)"></div>Daemon</div>
+  <div class="legend-pill soc-badge"><div class="legend-dot" style="background:var(--soc)"></div>SOC Dashboard</div>
+  <div class="legend-pill siem-badge"><div class="legend-dot" style="background:var(--siem)"></div>SIEM Export</div>
+  <div class="legend-pill eval-badge"><div class="legend-dot" style="background:var(--eval)"></div>Eval Harness</div>
+</div>
+
+
+<!-- ══════════════════════════════════════════════ -->
+<!-- CLI                                           -->
+<!-- ══════════════════════════════════════════════ -->
+<div class="section">
+  <div class="section-header">
+    <div class="mode-badge cli-badge">CLI</div>
+    <div class="section-title">Interactive Console — CyberSentinel.py</div>
+  </div>
+  <div class="section-sub">Full-featured 16-item terminal menu. Run as Administrator. All scan tiers available interactively.</div>
+  <div class="entry-point">python CyberSentinel.py</div>
+
+  <div class="uc-grid">
+
+    <div class="uc-card">
+      <div class="uc-card-header">
+        <div class="uc-icon cli-icon">Menu 1</div>
+        <div class="uc-name">Scan Local File or Directory</div>
+      </div>
+      <div class="uc-desc">Routes a file through the full 4-tier pipeline: Allowlist → SQLite cache → Cloud consensus (VT, OTX, MetaDefender, MalwareBazaar) → LightGBM ML → LLM triage report. Batch-scans entire directories for .exe, .dll, .sys, and more.</div>
+      <div class="uc-scenarios">
+        <div class="uc-scenarios-label">Scenarios</div>
+        <div class="uc-scenario">Analyst receives a suspicious installer from an email attachment and wants a quick verdict before opening.</div>
+        <div class="uc-scenario">SOC sweep of a shared network folder after a phishing campaign, batch-scanning all dropped executables at once.</div>
+        <div class="uc-scenario">Validating a software delivery from a vendor by scanning the full installer directory for embedded malicious DLLs.</div>
+      </div>
+    </div>
+
+    <div class="uc-card">
+      <div class="uc-card-header">
+        <div class="uc-icon cli-icon">Menu 2</div>
+        <div class="uc-name">Scan Hash / IP / URL / IoC Batch</div>
+      </div>
+      <div class="uc-desc">Looks up SHA-256 hashes, IP addresses, or URLs directly against cloud threat intel APIs without needing the original file. Accepts a .txt file of indicators for bulk triage.</div>
+      <div class="uc-scenarios">
+        <div class="uc-scenarios-label">Scenarios</div>
+        <div class="uc-scenario">IR team receives a list of IoCs from threat sharing (ISAC) and needs rapid bulk triage against live APIs.</div>
+        <div class="uc-scenario">Checking a suspicious outbound IP seen in firewall logs for known C2 association in OTX and VirusTotal.</div>
+        <div class="uc-scenario">Validating hashes from a vendor's SBOM against MalwareBazaar before deploying a software update.</div>
+      </div>
+    </div>
+
+    <div class="uc-card">
+      <div class="uc-card-header">
+        <div class="uc-icon cli-icon">Menu 3</div>
+        <div class="uc-name">Live EDR — Analyze Active Memory</div>
+      </div>
+      <div class="uc-desc">Enumerates running processes, resolves PIDs to executable paths, and routes the selected process through the full scan pipeline — effectively scanning a live process on disk.</div>
+      <div class="uc-scenarios">
+        <div class="uc-scenarios-label">Scenarios</div>
+        <div class="uc-scenario">Investigating a high-CPU process on a production server whose binary name looks legitimate but path is unusual.</div>
+        <div class="uc-scenario">Post-incident triage: a process spawned by a phishing macro is still alive and an analyst wants a verdict without killing it first.</div>
+        <div class="uc-scenario">Routine health check — scanning all running processes on a new machine before adding it to a fleet.</div>
+      </div>
+      <div class="uc-mitre">
+        <span class="mitre-tag">T1055</span><span class="mitre-tag">T1036</span>
+      </div>
+    </div>
+
+    <div class="uc-card">
+      <div class="uc-card-header">
+        <div class="uc-icon cli-icon">Menu 4</div>
+        <div class="uc-name">LoLBin Abuse Checker</div>
+      </div>
+      <div class="uc-desc">Five-layer static analysis of a process name + command line for Living-off-the-Land Binary abuse. Strips obfuscation (carets, env vars) before matching 22 built-in patterns plus the live LOLBAS feed. Flags high-entropy arguments.</div>
+      <div class="uc-scenarios">
+        <div class="uc-scenarios-label">Scenarios</div>
+        <div class="uc-scenario">SOC analyst suspects certutil was used to download a payload; pastes the observed command line for instant classification.</div>
+        <div class="uc-scenario">Hunting for mshta- or regsvr32-based execution in a batch of forensic process logs collected from an endpoint.</div>
+        <div class="uc-scenario">Red team operator verifying whether a chosen LOLBin + argument combination would be flagged by the detector before executing.</div>
+      </div>
+      <div class="uc-mitre">
+        <span class="mitre-tag">T1105</span><span class="mitre-tag">T1218</span><span class="mitre-tag">T1059.003</span>
+      </div>
+    </div>
+
+    <div class="uc-card">
+      <div class="uc-card-header">
+        <div class="uc-icon cli-icon">Menu 5</div>
+        <div class="uc-name">BYOVD Vulnerable Driver Scan</div>
+      </div>
+      <div class="uc-desc">Scans System32\drivers for drivers whose SHA-256 matches the LOLDrivers vulnerable driver database. Falls back to filename matching when hashes are absent. Reports CVEs and known abuse techniques.</div>
+      <div class="uc-scenarios">
+        <div class="uc-scenarios-label">Scenarios</div>
+        <div class="uc-scenario">Hardening sweep of a new Windows image before mass deployment — identifying any bundled vulnerable drivers.</div>
+        <div class="uc-scenario">Post-breach review: checking whether attackers dropped a signed vulnerable driver to disable EDR (BYOVD technique).</div>
+        <div class="uc-scenario">Compliance audit requiring documentation that no known-vulnerable kernel drivers are present on regulated endpoints.</div>
+      </div>
+      <div class="uc-mitre">
+        <span class="mitre-tag">T1068</span><span class="mitre-tag">T1014</span>
+      </div>
+    </div>
+
+    <div class="uc-card">
+      <div class="uc-card-header">
+        <div class="uc-icon cli-icon">Menu 6</div>
+        <div class="uc-name">Attack Chain Correlation</div>
+      </div>
+      <div class="uc-desc">Queries the shared event_timeline for completed multi-stage attack chain matches across a 10-minute correlation window. Displays any active chains with their MITRE stage breakdown and L1 triage steps.</div>
+      <div class="uc-scenarios">
+        <div class="uc-scenarios-label">Scenarios</div>
+        <div class="uc-scenario">Alert fatigue reduction: analyst reviews all open chains after an alert storm to prioritize which individual alerts form a coherent kill chain.</div>
+        <div class="uc-scenario">During an active incident, checking whether the observed PowerShell execution and outbound C2 connection have been correlated as a "Fileless → C2" chain.</div>
+        <div class="uc-scenario">End-of-shift review to confirm no silent attack chains completed overnight while the team was offline.</div>
+      </div>
+      <div class="uc-mitre">
+        <span class="mitre-tag">T1055</span><span class="mitre-tag">T1059.001</span><span class="mitre-tag">T1071</span>
+      </div>
+    </div>
+
+    <div class="uc-card">
+      <div class="uc-card-header">
+        <div class="uc-icon cli-icon">Menu 7</div>
+        <div class="uc-name">Baseline Environment Manager</div>
+      </div>
+      <div class="uc-desc">Starts or stops behavioral profiling (LEARN mode) and shows statistics. In LEARN mode the engine silently records every process and its network destinations. In DETECT mode unknown processes receive a risk penalty fed into the Dynamic Risk Score.</div>
+      <div class="uc-scenarios">
+        <div class="uc-scenarios-label">Scenarios</div>
+        <div class="uc-scenario">Establishing a 24-hour behavioral baseline on a new air-gapped industrial control system before enabling live detection.</div>
+        <div class="uc-scenario">After a software update, re-baselining an endpoint so that the new processes added by the update are no longer flagged as unknown.</div>
+        <div class="uc-scenario">Checking baseline stats mid-investigation to see how many processes running right now are absent from the known-good profile.</div>
+      </div>
+    </div>
+
+    <div class="uc-card">
+      <div class="uc-card-header">
+        <div class="uc-icon cli-icon">Menu 8</div>
+        <div class="uc-name">Fileless / AMSI Alert History</div>
+      </div>
+      <div class="uc-desc">Displays all alerts stored in the fileless_alerts table — anonymous RWX memory detections, AMSI ScriptBlock hits, and in-memory script analysis results — with timestamps, process context, and matched patterns.</div>
+      <div class="uc-scenarios">
+        <div class="uc-scenarios-label">Scenarios</div>
+        <div class="uc-scenario">Analyst reviewing overnight PowerShell alert history to identify which scripts triggered AMSI pattern matches and their originating process.</div>
+        <div class="uc-scenario">Forensic review after a suspected fileless attack: confirming that RWX memory regions were detected and at what time relative to other events.</div>
+        <div class="uc-scenario">Compliance reporting: exporting evidence that in-memory attack vectors are actively monitored on a regulated endpoint.</div>
+      </div>
+      <div class="uc-mitre">
+        <span class="mitre-tag">T1059.001</span><span class="mitre-tag">T1027</span><span class="mitre-tag">T1055</span>
+      </div>
+    </div>
+
+    <div class="uc-card">
+      <div class="uc-card-header">
+        <div class="uc-icon cli-icon">Menu 9</div>
+        <div class="uc-name">BYOVD Real-Time Kernel Monitor</div>
+      </div>
+      <div class="uc-desc">Starts an interactive WMI-backed background monitor that polls Win32_SystemDriver every 10 seconds. New driver loads are checked against LOLDrivers in real time and immediately trigger console alerts and webhook notifications.</div>
+      <div class="uc-scenarios">
+        <div class="uc-scenarios-label">Scenarios</div>
+        <div class="uc-scenario">During a live red team exercise, a blue team operator runs this monitor to catch any BYOVD driver drop in real time.</div>
+        <div class="uc-scenario">Monitoring a high-value server during a patch window when unauthorized driver loads could indicate compromise.</div>
+        <div class="uc-scenario">Incident response: keeping an interactive session open on a compromised host to catch any new driver implant attempts while remediation is in progress.</div>
+      </div>
+      <div class="uc-mitre">
+        <span class="mitre-tag">T1068</span><span class="mitre-tag">T1014</span>
+      </div>
+    </div>
+
+    <div class="uc-card">
+      <div class="uc-card-header">
+        <div class="uc-icon cli-icon">Menu 10</div>
+        <div class="uc-name">AMSI Hook — Script & Memory Scan</div>
+      </div>
+      <div class="uc-desc">Two sub-modes: (a) scan a script file against 20+ AMSI bypass and credential theft patterns with MITRE technique mapping; (b) scan a running process PID for anonymous RWX memory regions via VirtualQueryEx — flagging shellcode staging.</div>
+      <div class="uc-scenarios">
+        <div class="uc-scenarios-label">Scenarios</div>
+        <div class="uc-scenario">Analyst receives a suspicious .ps1 script from an email and wants to assess its obfuscation level before executing in a sandbox.</div>
+        <div class="uc-scenario">Hunting for in-memory shellcode: scanning a suspicious process PID for RWX regions after detecting anomalous behavior via EDR telemetry.</div>
+        <div class="uc-scenario">Malware reverse engineering support: using the script scanner to map which MITRE techniques a captured script implements before writing a detection rule.</div>
+      </div>
+      <div class="uc-mitre">
+        <span class="mitre-tag">T1562.001</span><span class="mitre-tag">T1059.001</span><span class="mitre-tag">T1055</span>
+      </div>
+    </div>
+
+    <div class="uc-card">
+      <div class="uc-card-header">
+        <div class="uc-icon cli-icon">Menu 11</div>
+        <div class="uc-name">Network Containment Control</div>
+      </div>
+      <div class="uc-desc">Toggles Windows Firewall to blockinbound/blockoutbound on all profiles (isolate) or restores to default (restore). Uses netsh advfirewall with no terminal flash. Requires Administrator. Instant host quarantine without physical access.</div>
+      <div class="uc-scenarios">
+        <div class="uc-scenarios-label">Scenarios</div>
+        <div class="uc-scenario">Active ransomware detected mid-encryption: immediately isolating the host's network to prevent lateral movement and C2 communication while preserving the OS for forensic imaging.</div>
+        <div class="uc-scenario">Coordinated response across a SOC playbook — an automated or manual step that isolates an infected endpoint the moment a CRITICAL verdict is confirmed.</div>
+        <div class="uc-scenario">Controlled test of network isolation as part of an IR drill, then restoring connectivity to verify the restore path works correctly.</div>
+      </div>
+    </div>
+
+    <div class="uc-card">
+      <div class="uc-card-header">
+        <div class="uc-icon cli-icon">Menu 12</div>
+        <div class="uc-name">Update Threat Intelligence Feeds</div>
+      </div>
+      <div class="uc-desc">Pulls all four open-source feeds — LOLBAS, LOLDrivers, Abuse.ch JA3 fingerprints, Feodo Tracker C2 IPs — and validates each before overwriting the cached copy. Stores update timestamps in update_meta.json.</div>
+      <div class="uc-scenarios">
+        <div class="uc-scenarios-label">Scenarios</div>
+        <div class="uc-scenario">Start-of-week SOC routine: refreshing all threat intel feeds before beginning the week's hunting activities.</div>
+        <div class="uc-scenario">After a major threat actor disclosure (new LOLBin abuse, new C2 infrastructure), immediately pulling updated feeds to ensure detections are current.</div>
+        <div class="uc-scenario">Before disconnecting a laptop for an air-gapped deployment, ensuring all feeds are up to date so the offline fallback data is as fresh as possible.</div>
+      </div>
+    </div>
+
+    <div class="uc-card">
+      <div class="uc-card-header">
+        <div class="uc-icon cli-icon">Menu 13</div>
+        <div class="uc-name">Configure API Keys & Settings</div>
+      </div>
+      <div class="uc-desc">Encrypted (hardware-bound AES-128) read/write of VirusTotal, AlienVault OTX, MetaDefender, and MalwareBazaar API keys, the SOC webhook URL, and the LLM model name. Keys cannot be decrypted on a different machine.</div>
+      <div class="uc-scenarios">
+        <div class="uc-scenarios-label">Scenarios</div>
+        <div class="uc-scenario">Initial deployment: entering API keys for the first time during tool setup on a new SOC workstation.</div>
+        <div class="uc-scenario">Rotating API keys after a security review, updating all four cloud service credentials without touching any config file directly.</div>
+        <div class="uc-scenario">Connecting a Discord/Slack webhook so that all future CRITICAL verdicts and attack chain alerts are automatically posted to the SOC channel.</div>
+      </div>
+    </div>
+
+    <div class="uc-card">
+      <div class="uc-card-header">
+        <div class="uc-icon cli-icon">Menu 14</div>
+        <div class="uc-name">View Threat Cache</div>
+      </div>
+      <div class="uc-desc">Renders the SQLite scan_cache table — SHA-256, filename, verdict, and timestamp for every previously scanned artifact. Enables instant repeat-detection lookups without re-querying cloud APIs. Useful for audit trails.</div>
+      <div class="uc-scenarios">
+        <div class="uc-scenarios-label">Scenarios</div>
+        <div class="uc-scenario">Producing a quick audit log of all files scanned during a week-long IR engagement to hand off to the client.</div>
+        <div class="uc-scenario">Verifying that a file previously marked MALICIOUS is still in the cache so it won't bypass future scans via the Tier 0.5 shortcut.</div>
+        <div class="uc-scenario">Cross-checking a new IoC hash against the local cache before spending an API quota call on a cloud lookup.</div>
+      </div>
+    </div>
+
+    <div class="uc-card">
+      <div class="uc-card-header">
+        <div class="uc-icon cli-icon">Menu 15</div>
+        <div class="uc-name">View Analyst Feedback History</div>
+      </div>
+      <div class="uc-desc">Displays the full correction queue with status lifecycle (PENDING_REVIEW → PENDING → TRAINED / REVOKED / CONFLICTED), timestamps, and the associated SHA-256. Used to audit and manage the adaptive learning pipeline.</div>
+      <div class="uc-scenarios">
+        <div class="uc-scenarios-label">Scenarios</div>
+        <div class="uc-scenario">Checking how many false positive corrections are queued as PENDING before triggering a scheduled retraining session.</div>
+        <div class="uc-scenario">Auditing a CONFLICTED correction where two analysts labeled the same hash differently, to decide which label to approve manually.</div>
+        <div class="uc-scenario">Verifying that a model rollback successfully moved a TRAINED correction back to REVOKED after a retraining session introduced regressions.</div>
+      </div>
+    </div>
+
+    <div class="uc-card">
+      <div class="uc-card-header">
+        <div class="uc-icon cli-icon">Menu 16</div>
+        <div class="uc-name">Generate Session Report & Exit</div>
+      </div>
+      <div class="uc-desc">Compiles all scan results, verdicts, SHAP explanations, risk scores, and alerts from the current session into a structured report saved to the Analysis Files directory, then exits the console cleanly.</div>
+      <div class="uc-scenarios">
+        <div class="uc-scenarios-label">Scenarios</div>
+        <div class="uc-scenario">End of an IR engagement: generating a forensic session summary to include in the client-facing incident report.</div>
+        <div class="uc-scenario">Shift handoff in a 24/7 SOC — outgoing analyst generates a report so the incoming analyst has full context on what was scanned and flagged.</div>
+        <div class="uc-scenario">Archiving a completed threat hunting session's findings before closing the tool, ensuring all AI triage notes and MITRE mappings are preserved.</div>
+      </div>
+    </div>
+
+  </div><!-- /uc-grid -->
+
+  <!-- CLI FLAGS -->
+  <table class="flags-table" style="margin-top:28px;">
+    <thead>
+      <tr>
+        <th>Flag</th>
+        <th>Mode launched</th>
+        <th>Use case</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>--daemon PATH</td>
+        <td>Headless daemon</td>
+        <td>Start continuous folder + WMI monitoring without the interactive menu.</td>
+      </tr>
+      <tr>
+        <td>--dashboard</td>
+        <td>Flask SOC dashboard</td>
+        <td>Launch the browser-based SOC view at http://127.0.0.1:5000 from the CLI.</td>
+      </tr>
+      <tr>
+        <td>--evaluate</td>
+        <td>Evaluation harness</td>
+        <td>Run the quantitative benchmark pipeline against a labeled sample set.</td>
+      </tr>
+      <tr>
+        <td>--update-intel</td>
+        <td>One-shot intel pull</td>
+        <td>Refresh all four threat feeds and exit — suitable for a scheduled task or cron job.</td>
+      </tr>
+      <tr>
+        <td>--sync URL</td>
+        <td>Enterprise hash sync</td>
+        <td>Pull enterprise-curated threat hashes via HTTPS into the local cache for fleet-wide consistency.</td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<hr class="divider">
+
+<!-- ══════════════════════════════════════════════ -->
+<!-- GUI                                           -->
+<!-- ══════════════════════════════════════════════ -->
+<div class="section">
+  <div class="section-header">
+    <div class="mode-badge gui-badge">GUI</div>
+    <div class="section-title">Desktop Application — gui.py (PyQt6)</div>
+  </div>
+  <div class="section-sub">15-page threaded desktop app. All scan operations run in QThread workers — the UI never blocks. Replaces CLI prompts with Qt dialogs for quarantine, isolation, and AI report display.</div>
+  <div class="entry-point">python gui.py</div>
+
+  <div class="uc-grid">
+
+    <div class="uc-card">
+      <div class="uc-card-header">
+        <div class="uc-icon gui-icon">Page 1</div>
+        <div class="uc-name">Dashboard Overview</div>
+      </div>
+      <div class="uc-desc">Top-level summary of all active detections, recent scan verdicts, attack chain status, drift alerts, and risk score distribution. Entry point for every shift and the first screen seen after launch.</div>
+      <div class="uc-scenarios">
+        <div class="uc-scenarios-label">Scenarios</div>
+        <div class="uc-scenario">Morning briefing: SOC analyst opens CyberSentinel and scans the dashboard for any overnight CRITICAL alerts or completed attack chains before starting triage.</div>
+        <div class="uc-scenario">Management demo: showing a non-technical stakeholder the live threat posture of an endpoint in an easily digestible visual format.</div>
+      </div>
+    </div>
+
+    <div class="uc-card">
+      <div class="uc-card-header">
+        <div class="uc-icon gui-icon">Page 2</div>
+        <div class="uc-name">Scan File</div>
+      </div>
+      <div class="uc-desc">Drag-and-drop or Browse file picker to route a single file or directory through all four tiers. Output renders in a color-coded ConsoleWidget. Quarantine authorization is a Qt dialog — no terminal interaction needed.</div>
+      <div class="uc-scenarios">
+        <div class="uc-scenarios-label">Scenarios</div>
+        <div class="uc-scenario">Level 1 analyst with no CLI experience scanning a suspicious attachment submitted via the helpdesk ticketing system.</div>
+        <div class="uc-scenario">Scanning a USB drive dropped in the parking lot (classic physical social engineering scenario) by dragging its root folder into the scan window.</div>
+      </div>
+    </div>
+
+    <div class="uc-card">
+      <div class="uc-card-header">
+        <div class="uc-icon gui-icon">Page 3</div>
+        <div class="uc-name">Scan Hash / IoC</div>
+      </div>
+      <div class="uc-desc">Text input or file picker for SHA-256 hashes, IPs, URLs, and batch .txt IoC lists. Results table shows per-API verdict, engine count, and Dynamic Risk Score. No file required — cloud-only lookup path.</div>
+      <div class="uc-scenarios">
+        <div class="uc-scenarios-label">Scenarios</div>
+        <div class="uc-scenario">Pasting a hash from a SIEM alert directly into the GUI to get a multi-source verdict without leaving the tool.</div>
+        <div class="uc-scenario">Loading a bulk IoC list from an ISAC report and triaging all 200 indicators in a single batch while reviewing results in the table.</div>
+      </div>
+    </div>
+
+    <div class="uc-card">
+      <div class="uc-card-header">
+        <div class="uc-icon gui-icon">Page 4</div>
+        <div class="uc-name">Live EDR</div>
+      </div>
+      <div class="uc-desc">Live process list with PID, name, and path. Click a process to scan its binary through all tiers. SHAP explanations and LLM triage report render inline. Designed for real-time process investigation without a terminal.</div>
+      <div class="uc-scenarios">
+        <div class="uc-scenarios-label">Scenarios</div>
+        <div class="uc-scenario">Non-CLI operator investigating a high-memory process flagged by task manager, clicking it in the list to get a full scan verdict and AI explanation.</div>
+        <div class="uc-scenario">Quickly scanning all processes associated with a newly logged-in user account to detect any malicious persistence mechanisms they brought with them.</div>
+      </div>
+    </div>
+
+    <div class="uc-card">
+      <div class="uc-card-header">
+        <div class="uc-icon gui-icon">Page 5</div>
+        <div class="uc-name">LoLBin Abuse</div>
+      </div>
+      <div class="uc-desc">GUI frontend for the 5-layer LOLBAS detection engine. Input a process name and command line, or load from a process list. Displays matched patterns, Shannon entropy score, and MITRE technique tags inline.</div>
+      <div class="uc-scenarios">
+        <div class="uc-scenarios-label">Scenarios</div>
+        <div class="uc-scenario">Blue teamer reviewing process creation events exported from a SIEM, pasting command lines one by one to identify which ones are LOLBin abuse.</div>
+        <div class="uc-scenario">Threat hunter analyzing a set of mshta and certutil command lines from endpoint telemetry to determine which are malicious vs. legitimate admin activity.</div>
+      </div>
+    </div>
+
+    <div class="uc-card">
+      <div class="uc-card-header">
+        <div class="uc-icon gui-icon">Page 6</div>
+        <div class="uc-name">BYOVD Drivers</div>
+      </div>
+      <div class="uc-desc">Runs the BYOVD scan against System32\drivers and displays a table of all detected vulnerable drivers with their CVE references, known abuse techniques, and LOLDrivers database match confidence.</div>
+      <div class="uc-scenarios">
+        <div class="uc-scenarios-label">Scenarios</div>
+        <div class="uc-scenario">Pre-deployment hardening review: a system administrator scanning a gold image for bundled vulnerable drivers before mass rollout.</div>
+        <div class="uc-scenario">Post-breach investigation: quickly checking whether an attacker planted a known BYOVD driver to blind the endpoint protection platform.</div>
+      </div>
+    </div>
+
+    <div class="uc-card">
+      <div class="uc-card-header">
+        <div class="uc-icon gui-icon">Page 7</div>
+        <div class="uc-name">Attack Chains</div>
+      </div>
+      <div class="uc-desc">Visualizes completed and in-progress attack chains from the chain_alerts table. Each chain shows its stages, timestamps, involved processes, severity, and MITRE technique links. Webhook send status is shown per chain.</div>
+      <div class="uc-scenarios">
+        <div class="uc-scenarios-label">Scenarios</div>
+        <div class="uc-scenario">Incident commander reviewing which kill chains have completed during an active breach to assess attacker stage progression.</div>
+        <div class="uc-scenario">Threat hunting: confirming a DGA Beacon → C2 Resolve chain pattern matches the TTPs of a known APT group being tracked.</div>
+      </div>
+    </div>
+
+    <div class="uc-card">
+      <div class="uc-card-header">
+        <div class="uc-icon gui-icon">Page 8</div>
+        <div class="uc-name">Baseline</div>
+      </div>
+      <div class="uc-desc">Start/Stop behavioral learning, view baseline stats (profile count, last updated, unknown process rate), and inspect the per-process behavioral profile table. Controls the risk penalty input to the Dynamic Risk Scorer.</div>
+      <div class="uc-scenarios">
+        <div class="uc-scenarios-label">Scenarios</div>
+        <div class="uc-scenario">Setting up CyberSentinel on an OT/ICS system where the process inventory is known and static — baselining for 24 hours then enabling detect mode for permanent monitoring.</div>
+        <div class="uc-scenario">After a legitimate software update, reviewing the unknown process rate spike and selectively approving new processes into the baseline without full re-learning.</div>
+      </div>
+    </div>
+
+    <div class="uc-card">
+      <div class="uc-card-header">
+        <div class="uc-icon gui-icon">Page 9</div>
+        <div class="uc-name">Fileless / AMSI</div>
+      </div>
+      <div class="uc-desc">Table view of all fileless_alerts: RWX memory hits, AMSI ScriptBlock pattern matches, and script file scan results. Each row shows process, timestamp, matched indicators, and MITRE technique tags. Refresh button polls latest events.</div>
+      <div class="uc-scenarios">
+        <div class="uc-scenarios-label">Scenarios</div>
+        <div class="uc-scenario">Reviewing all PowerShell ScriptBlock alerts from an endpoint that triggered multiple AMSI events overnight to identify which script was the initial stager.</div>
+        <div class="uc-scenario">Forensic analysis: correlating the timestamp of an RWX memory detection with C2 connection alerts to reconstruct the shellcode injection sequence.</div>
+      </div>
+    </div>
+
+    <div class="uc-card">
+      <div class="uc-card-header">
+        <div class="uc-icon gui-icon">Page 10</div>
+        <div class="uc-name">Network</div>
+      </div>
+      <div class="uc-desc">Displays all C2 alerts (Feodo IP hits, DGA domain detections, JA3 fingerprint matches) and provides Isolate / Restore network buttons backed by Windows Firewall. Confirmation dialog prevents accidental isolation.</div>
+      <div class="uc-scenarios">
+        <div class="uc-scenarios-label">Scenarios</div>
+        <div class="uc-scenario">Analyst sees a Feodo C2 IP hit and immediately clicks Isolate to cut the endpoint off the network while escalating to the IR team.</div>
+        <div class="uc-scenario">Reviewing JA3 TLS fingerprint matches to identify outbound C2 traffic that is otherwise encrypted and invisible to payload inspection.</div>
+      </div>
+    </div>
+
+    <div class="uc-card">
+      <div class="uc-card-header">
+        <div class="uc-icon gui-icon">Page 11</div>
+        <div class="uc-name">Intel Feeds</div>
+      </div>
+      <div class="uc-desc">Shows last-update timestamps for all four feeds (LOLBAS, LOLDrivers, JA3, Feodo), feed sizes, and a Refresh All button. Validates each feed before writing, rejecting empty or malformed responses.</div>
+      <div class="uc-scenarios">
+        <div class="uc-scenarios-label">Scenarios</div>
+        <div class="uc-scenario">Verifying that threat feeds were successfully refreshed after a new threat actor campaign was disclosed and checking that LOLDrivers now includes the newly published vulnerable driver.</div>
+        <div class="uc-scenario">Diagnosing a stale feed warning by checking the update timestamp and manually triggering a refresh when automated updates failed.</div>
+      </div>
+    </div>
+
+    <div class="uc-card">
+      <div class="uc-card-header">
+        <div class="uc-icon gui-icon">Page 12</div>
+        <div class="uc-name">Settings</div>
+      </div>
+      <div class="uc-desc">GUI form for entering and saving API keys, webhook URL, and LLM model. All values are encrypted with the hardware-bound Fernet key on save. Includes a webhook test button that sends a sample payload.</div>
+      <div class="uc-scenarios">
+        <div class="uc-scenarios-label">Scenarios</div>
+        <div class="uc-scenario">Initial setup walkthrough: a new SOC team member entering all API credentials and testing the Discord webhook before going live.</div>
+        <div class="uc-scenario">Key rotation: updating the VirusTotal API key after the previous one was accidentally leaked, without touching config files directly.</div>
+      </div>
+    </div>
+
+    <div class="uc-card">
+      <div class="uc-card-header">
+        <div class="uc-icon gui-icon">Page 13</div>
+        <div class="uc-name">Evaluation</div>
+      </div>
+      <div class="uc-desc">GUI launcher for the evaluation harness. Select sample directories, choose evaluation mode (ML-only, Tier 1+ML, full), and watch progress in a live output console. Results render in a metrics table after the run completes.</div>
+      <div class="uc-scenarios">
+        <div class="uc-scenarios-label">Scenarios</div>
+        <div class="uc-scenario">Researcher benchmarking model performance after adding a new malware family to the training set, running the full harness to compare F1 and FPR against the previous model.</div>
+        <div class="uc-scenario">Pre-deployment validation: running the harness on a representative sample set to confirm the model meets the required FPR threshold before pushing to production.</div>
+      </div>
+    </div>
+
+    <div class="uc-card">
+      <div class="uc-card-header">
+        <div class="uc-icon gui-icon">Page 14</div>
+        <div class="uc-name">Analyst Feedback</div>
+      </div>
+      <div class="uc-desc">Full correction queue management: view all FP/FN submissions with lifecycle status, approve or reject CONFLICTED entries, revoke PENDING corrections, and manually trigger retraining. Conflict resolution dialog for contradictory labels.</div>
+      <div class="uc-scenarios">
+        <div class="uc-scenarios-label">Scenarios</div>
+        <div class="uc-scenario">Lead analyst resolving a CONFLICTED correction where two junior analysts submitted contradictory verdicts for the same hash — reviewing the cloud evidence and selecting the correct label.</div>
+        <div class="uc-scenario">Retraining trigger: after 5 validated corrections accumulate, the lead clicks Retrain Now to incorporate analyst feedback into the live model immediately rather than waiting for the auto-retrain threshold.</div>
+      </div>
+    </div>
+
+    <div class="uc-card">
+      <div class="uc-card-header">
+        <div class="uc-icon gui-icon">Page 15</div>
+        <div class="uc-name">Adaptive Learning</div>
+      </div>
+      <div class="uc-desc">Visualizes the ML model's health: SHAP feature attribution charts for the most recent scans, drift detector status and alert history, retraining session log, and model performance trend over time.</div>
+      <div class="uc-scenarios">
+        <div class="uc-scenarios-label">Scenarios</div>
+        <div class="uc-scenario">Monitoring model health: spotting a Page-Hinkley drift alert indicating confidence on MALICIOUS verdicts has dropped 15%, prompting an immediate retraining session with fresh malware samples.</div>
+        <div class="uc-scenario">SHAP review: after a false negative, an analyst inspects the top feature attributions to understand which PE features caused the model to classify a malicious file as safe, informing future labeling strategy.</div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<hr class="divider">
+
+<!-- ══════════════════════════════════════════════ -->
+<!-- DAEMON                                        -->
+<!-- ══════════════════════════════════════════════ -->
+<div class="section">
+  <div class="section-header">
+    <div class="mode-badge daemon-badge">Daemon</div>
+    <div class="section-title">Headless Monitor — --daemon PATH</div>
+  </div>
+  <div class="section-sub">Seven concurrent background threads covering files, processes, network, TLS, PowerShell, and attack chain correlation. No user interaction required after startup.</div>
+  <div class="entry-point">python CyberSentinel.py --daemon "C:\Watch\Folder"</div>
+
+  <div class="thread-list">
+
+    <div class="thread-row">
+      <div class="thread-num">Thread 1<br>Watchdog</div>
+      <div>
+        <div class="thread-name">Folder File Monitor</div>
+        <div class="thread-desc">Intercepts new file drops matching watched extensions (.exe .dll .sys .apk .elf .pdf .bat .ps1 .vbs .hta) in the configured folder. A 2-second sleep absorbs write completion before routing the file through the full scan pipeline.</div>
+        <div class="uc-scenarios" style="border-top:none;padding-top:0;">
+          <div class="uc-scenario">Monitoring a shared network drop-zone where all inbound files from external partners land — automatically scanning every new file before it can be accessed by internal users.</div>
+          <div class="uc-scenario">Watching an email gateway's attachment extraction directory so every attachment is scanned at the perimeter before delivery to the mailbox.</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="thread-row">
+      <div class="thread-num">Thread 2<br>WMI</div>
+      <div>
+        <div class="thread-name">WMI Process & Driver Hook</div>
+        <div class="thread-desc">Fires on every new Win32_Process and Win32_SystemDriver creation event. Routes each event through the LoLBin detector, BYOVD detector, and baseline engine in real time. Zero polling delay — event-driven via WMI subscription.</div>
+        <div class="uc-scenarios" style="border-top:none;padding-top:0;">
+          <div class="uc-scenario">Detecting certutil spawned by a Word macro within milliseconds of execution, correlating parent/child process lineage to confirm LOLBin abuse.</div>
+          <div class="uc-scenario">Catching a vulnerable driver dropped and loaded by ransomware during its EDR-blinding phase before it can disable protection.</div>
+        </div>
+        <div class="uc-mitre" style="margin-top:8px;">
+          <span class="mitre-tag">T1218</span><span class="mitre-tag">T1068</span><span class="mitre-tag">T1059</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="thread-row">
+      <div class="thread-num">Thread 3<br>ETW</div>
+      <div>
+        <div class="thread-name">Event ID 4688 Process Creation Monitor</div>
+        <div class="thread-desc">Reads Windows Security Event Log for process creation events (Event ID 4688). Provides a secondary, ETW-backed detection path for process launches that complements the WMI hook with audit log evidence.</div>
+        <div class="uc-scenarios" style="border-top:none;padding-top:0;">
+          <div class="uc-scenario">Providing a forensic-quality record of every process launch with full command line (when Windows audit policy is configured), suitable for SIEM forwarding.</div>
+          <div class="uc-scenario">Detecting process creation that bypasses WMI (e.g., via direct syscalls) by relying on the kernel-level audit event instead.</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="thread-row">
+      <div class="thread-num">Thread 4<br>Feodo</div>
+      <div>
+        <div class="thread-name">C2 IP Connection Monitor</div>
+        <div class="thread-desc">Continuously polls active network connections via psutil and cross-references remote IPs against the Feodo Tracker C2 botnet blocklist. Fires a webhook alert on any match and writes to c2_alerts.</div>
+        <div class="uc-scenarios" style="border-top:none;padding-top:0;">
+          <div class="uc-scenario">Detecting an infected host beaconing to a known Emotet or Qakbot C2 IP the moment the connection is established, before any payload is delivered.</div>
+          <div class="uc-scenario">Monitoring an already-compromised host under controlled conditions to understand C2 communication patterns and timing without cutting network access immediately.</div>
+        </div>
+        <div class="uc-mitre" style="margin-top:8px;">
+          <span class="mitre-tag">T1071</span><span class="mitre-tag">T1041</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="thread-row">
+      <div class="thread-num">Thread 5<br>JA3</div>
+      <div>
+        <div class="thread-name">Passive TLS JA3 Fingerprint Sniffer</div>
+        <div class="thread-desc">Captures TLS ClientHello packets passively via Scapy + Npcap, computes JA3 fingerprint hashes, and cross-references against Abuse.ch SSLBL. No traffic decryption required. Requires Npcap installed.</div>
+        <div class="uc-scenarios" style="border-top:none;padding-top:0;">
+          <div class="uc-scenario">Identifying C2 traffic from malware that uses a distinctive TLS client fingerprint (e.g., Cobalt Strike's default JA3) even when the payload is fully encrypted.</div>
+          <div class="uc-scenario">Network forensics on a host with unknown malware: capturing JA3 hashes from outbound TLS and comparing against known-bad fingerprints to attribute the malware family.</div>
+        </div>
+        <div class="uc-mitre" style="margin-top:8px;">
+          <span class="mitre-tag">T1071.001</span><span class="mitre-tag">T1573</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="thread-row">
+      <div class="thread-num">Thread 6<br>AMSI</div>
+      <div>
+        <div class="thread-name">PowerShell ScriptBlock Log Monitor</div>
+        <div class="thread-desc">Tails Windows Event Log for Event ID 4104 (PowerShell ScriptBlock logging). Scores each script against 16 obfuscation patterns. Fires alerts at ≥2 matches. Requires ScriptBlock logging enabled in registry.</div>
+        <div class="uc-scenarios" style="border-top:none;padding-top:0;">
+          <div class="uc-scenario">Automatically detecting a PowerShell download cradle (IEX + WebClient) the moment it executes, before the payload lands on disk, satisfying a "fileless attack" detection requirement.</div>
+          <div class="uc-scenario">Monitoring a developer workstation where PowerShell is frequently used — alerting only when obfuscation indicators cross the threshold, avoiding noise from legitimate scripts.</div>
+        </div>
+        <div class="uc-mitre" style="margin-top:8px;">
+          <span class="mitre-tag">T1059.001</span><span class="mitre-tag">T1027</span><span class="mitre-tag">T1562.001</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="thread-row">
+      <div class="thread-num">Thread 7<br>Correlator</div>
+      <div>
+        <div class="thread-name">Attack Chain Correlator (60s sweep)</div>
+        <div class="thread-desc">Sweeps the event_timeline every 60 seconds for sequences matching 7 predefined multi-stage attack chains within a 10-minute window. On a match: writes to chain_alerts, fires a rich webhook embed with MITRE links and L1 triage steps.</div>
+        <div class="uc-scenarios" style="border-top:none;padding-top:0;">
+          <div class="uc-scenario">Automatically escalating what appear to be separate low-severity events (a LSASS access + credential API call) into a single HIGH chain alert when they occur within 10 minutes of each other.</div>
+          <div class="uc-scenario">Reducing mean-time-to-detect for sophisticated multi-stage attacks where no single event would trigger a priority alert, but the sequence is unmistakably malicious.</div>
+        </div>
+        <div class="uc-mitre" style="margin-top:8px;">
+          <span class="mitre-tag">T1003</span><span class="mitre-tag">T1055</span><span class="mitre-tag">T1071</span>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<hr class="divider">
+
+<!-- ══════════════════════════════════════════════ -->
+<!-- SOC DASHBOARD                                 -->
+<!-- ══════════════════════════════════════════════ -->
+<div class="section">
+  <div class="section-header">
+    <div class="mode-badge soc-badge">SOC Dashboard</div>
+    <div class="section-title">Web Dashboard — dashboard.py (Flask)</div>
+  </div>
+  <div class="section-sub">Self-contained Flask app at http://127.0.0.1:5000. Reads exclusively from threat_cache.db. Seven auto-refreshing tabs — no backend writes, read-only SOC view suitable for a secondary monitor or NOC screen.</div>
+  <div class="entry-point">python dashboard.py &nbsp;|&nbsp; python CyberSentinel.py --dashboard</div>
+
+  <div class="uc-grid">
+
+    <div class="uc-card">
+      <div class="uc-card-header">
+        <div class="uc-icon soc-icon">Tab 1</div>
+        <div class="uc-name">Detection Summary & Statistics</div>
+      </div>
+      <div class="uc-desc">Aggregate counts of total scans, MALICIOUS verdicts, alert categories, and active chain count. Auto-refreshes to give a live posture view without manual interaction.</div>
+      <div class="uc-scenarios">
+        <div class="uc-scenarios-label">Scenarios</div>
+        <div class="uc-scenario">Pinned to a secondary NOC monitor so the on-call team always has a live threat count visible without switching tools.</div>
+        <div class="uc-scenario">Management-facing display during a security incident, showing real-time detection volume to leadership without exposing raw data.</div>
+      </div>
+    </div>
+
+    <div class="uc-card">
+      <div class="uc-card-header">
+        <div class="uc-icon soc-icon">Tab 2</div>
+        <div class="uc-name">Scan Cache — Recent Verdicts</div>
+      </div>
+      <div class="uc-desc">Paginated table of all scan_cache entries sorted by timestamp. Shows SHA-256, filename, verdict, and scan time. Allows SOC to audit recent scan activity at a glance from any browser on the same host.</div>
+      <div class="uc-scenarios">
+        <div class="uc-scenarios-label">Scenarios</div>
+        <div class="uc-scenario">Shift handoff: incoming analyst reviews the last 4 hours of scan verdicts to understand what was processed before their shift started.</div>
+        <div class="uc-scenario">Quick audit during a client review — showing the customer a live list of files scanned on their endpoint without giving them GUI access.</div>
+      </div>
+    </div>
+
+    <div class="uc-card">
+      <div class="uc-card-header">
+        <div class="uc-icon soc-icon">Tab 3</div>
+        <div class="uc-name">Attack Chains</div>
+      </div>
+      <div class="uc-desc">All completed chain_alerts with stage breakdown, severity, and timeline. Updated on each auto-refresh cycle so no manual reload is needed. Color-coded severity bands (critical / high / medium).</div>
+      <div class="uc-scenarios">
+        <div class="uc-scenarios-label">Scenarios</div>
+        <div class="uc-scenario">Incident commander monitoring chain completion status in a browser tab during an active breach response, correlating chain timestamps with IR action log entries.</div>
+      </div>
+    </div>
+
+    <div class="uc-card">
+      <div class="uc-card-header">
+        <div class="uc-icon soc-icon">Tab 4</div>
+        <div class="uc-name">C2 / Network Alerts</div>
+      </div>
+      <div class="uc-desc">All c2_alerts from Feodo IP, DGA domain, and JA3 fingerprint monitors. Each row shows alert type, remote IP/domain, detection method, and timestamp. Provides a network-focused view independent of the endpoint scan pipeline.</div>
+      <div class="uc-scenarios">
+        <div class="uc-scenarios-label">Scenarios</div>
+        <div class="uc-scenario">Network analyst reviewing the C2 alert feed to extract IOC IPs and domains for firewall blocklist submission.</div>
+        <div class="uc-scenario">Cross-referencing C2 alert timestamps with SIEM network flow data to determine if lateral movement followed the initial C2 beacon.</div>
+      </div>
+    </div>
+
+    <div class="uc-card">
+      <div class="uc-card-header">
+        <div class="uc-icon soc-icon">Tab 5</div>
+        <div class="uc-name">Driver Alerts (BYOVD)</div>
+      </div>
+      <div class="uc-desc">All driver_alerts from the BYOVD detector with matched driver name, SHA-256, LOLDrivers entry, and timestamp. Suitable for rapid escalation to kernel-level incident response teams.</div>
+      <div class="uc-scenarios">
+        <div class="uc-scenarios-label">Scenarios</div>
+        <div class="uc-scenario">Kernel security team reviewing driver alert history to determine whether an attacker's BYOVD driver was already present before the breach was detected.</div>
+      </div>
+    </div>
+
+    <div class="uc-card">
+      <div class="uc-card-header">
+        <div class="uc-icon soc-icon">Tab 6</div>
+        <div class="uc-name">Fileless / AMSI Alerts</div>
+      </div>
+      <div class="uc-desc">All fileless_alerts: RWX memory detections, AMSI ScriptBlock matches, script file scan results. Provides a dedicated fileless-specific view, useful when the SOC dashboard is open alongside a PowerShell audit log review.</div>
+      <div class="uc-scenarios">
+        <div class="uc-scenarios-label">Scenarios</div>
+        <div class="uc-scenario">Tier 2 analyst keeping the fileless alert tab open during a suspected PowerShell-based attack, watching for new AMSI hits as the attacker iterates their obfuscation attempts in real time.</div>
+      </div>
+    </div>
+
+    <div class="uc-card">
+      <div class="uc-card-header">
+        <div class="uc-icon soc-icon">Tab 7</div>
+        <div class="uc-name">Live Event Timeline</div>
+      </div>
+      <div class="uc-desc">Raw event_timeline feed — all detector events from the last 60 minutes across every module. Provides the unfiltered, chronological view used by the chain correlator, useful for manual timeline reconstruction.</div>
+      <div class="uc-scenarios">
+        <div class="uc-scenarios-label">Scenarios</div>
+        <div class="uc-scenario">Forensic timeline reconstruction: manually stepping through the last hour of events to understand the exact sequence of a multi-stage attack before chain correlation completed.</div>
+        <div class="uc-scenario">Verifying that the daemon's seven threads are all generating events correctly after a system restart, checking for gaps in the timeline that indicate a thread failure.</div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<hr class="divider">
+
+<!-- ══════════════════════════════════════════════ -->
+<!-- SIEM EXPORT                                   -->
+<!-- ══════════════════════════════════════════════ -->
+<div class="section">
+  <div class="section-header">
+    <div class="mode-badge siem-badge">SIEM Export</div>
+    <div class="section-title">Telemetry Exporter — siem_export.py</div>
+  </div>
+  <div class="section-sub">Incremental Splunk HEC push and/or JSON Lines file export. Exports detections and behavioral telemetry. Re-runs are safe — only new records since the last export are included.</div>
+  <div class="entry-point">python siem_export.py [--mode file|hec|both] [--watch N]</div>
+
+  <div class="uc-grid">
+
+    <div class="uc-card">
+      <div class="uc-card-header">
+        <div class="uc-icon siem-icon">--file</div>
+        <div class="uc-name">JSON Lines File Export</div>
+      </div>
+      <div class="uc-desc">Exports all detections and event_timeline telemetry to a JSONL file since the last saved export state. Incremental — re-running appends only new records. Suitable for log shippers, Elastic, or offline analysis.</div>
+      <div class="uc-scenarios">
+        <div class="uc-scenarios-label">Scenarios</div>
+        <div class="uc-scenario">Daily scheduled task exporting the previous day's detections to a JSONL file that a Logstash pipeline picks up for ingestion into an on-premises Elastic SIEM.</div>
+        <div class="uc-scenario">End-of-engagement export: generating a JSONL archive of all detections across a two-week IR engagement for post-incident reporting and evidentiary archival.</div>
+        <div class="uc-scenario">Offline analysis: exporting telemetry to JSONL for import into a Jupyter notebook for statistical analysis of detection patterns across a fleet.</div>
+      </div>
+    </div>
+
+    <div class="uc-card">
+      <div class="uc-card-header">
+        <div class="uc-icon siem-icon">--hec</div>
+        <div class="uc-name">Splunk HEC Push</div>
+      </div>
+      <div class="uc-desc">Pushes detections directly to a Splunk HTTP Event Collector endpoint with proper sourcetype tagging (cybersentinel:detection, cybersentinel:telemetry). Incremental state tracking prevents duplicate events.</div>
+      <div class="uc-scenarios">
+        <div class="uc-scenarios-label">Scenarios</div>
+        <div class="uc-scenario">Integrating CyberSentinel as a data source into an enterprise Splunk SIEM so that chain alerts and C2 detections appear in existing SOC dashboards and correlation rules.</div>
+        <div class="uc-scenario">One-shot historical import: using --reset to push the full detection history into a newly provisioned Splunk index during initial integration.</div>
+      </div>
+    </div>
+
+    <div class="uc-card">
+      <div class="uc-card-header">
+        <div class="uc-icon siem-icon">--watch</div>
+        <div class="uc-name">Continuous Watch Mode</div>
+      </div>
+      <div class="uc-desc">Runs the export loop on a configurable interval (e.g., every 30 seconds), pushing incremental deltas to Splunk HEC or the JSONL file continuously. Keeps SIEM data near-real-time without a persistent agent.</div>
+      <div class="uc-scenarios">
+        <div class="uc-scenarios-label">Scenarios</div>
+        <div class="uc-scenario">Running as a Windows service alongside the daemon so that all detections appear in Splunk within 30 seconds for SOC alert correlation.</div>
+        <div class="uc-scenario">During an active incident, starting watch mode to ensure the SIEM receives a live feed of all new detections as fast as possible without manual re-export.</div>
+      </div>
+    </div>
+
+    <div class="uc-card">
+      <div class="uc-card-header">
+        <div class="uc-icon siem-icon">--both</div>
+        <div class="uc-name">Simultaneous File + HEC Export</div>
+      </div>
+      <div class="uc-desc">Writes to both a JSONL archive and the Splunk HEC endpoint in a single run. The JSONL provides a local backup; the HEC push feeds the live SIEM. Configuration read from siem_config.json.</div>
+      <div class="uc-scenarios">
+        <div class="uc-scenarios-label">Scenarios</div>
+        <div class="uc-scenario">Regulated environments where a local audit trail is required in addition to SIEM forwarding — satisfying both data retention and real-time alerting requirements in one command.</div>
+        <div class="uc-scenario">Fallback resilience: if the Splunk HEC endpoint is temporarily unavailable, the JSONL file captures all missed events for replay once connectivity is restored.</div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<hr class="divider">
+
+<!-- ══════════════════════════════════════════════ -->
+<!-- EVALUATION HARNESS                            -->
+<!-- ══════════════════════════════════════════════ -->
+<div class="section">
+  <div class="section-header">
+    <div class="mode-badge eval-badge">Eval Harness</div>
+    <div class="section-title">Benchmark Pipeline — eval_harness.py</div>
+  </div>
+  <div class="section-sub">Quantitative ML benchmark pipeline. Accepts labeled malware/clean sample directories. Produces precision, recall, F1, FPR, FNR, and accuracy across a threshold sweep. Results persist across restarts in v2_predictions.db.</div>
+  <div class="entry-point">python eval_harness.py &nbsp;|&nbsp; python CyberSentinel.py --evaluate</div>
+
+  <div class="uc-grid">
+
+    <div class="uc-card">
+      <div class="uc-card-header">
+        <div class="uc-icon eval-icon">Mode A</div>
+        <div class="uc-name">Temporal Stratification Benchmark</div>
+      </div>
+      <div class="uc-desc">Splits samples into pre-2020 and post-2020 subsets and evaluates detection performance on each independently. Reveals whether the model degrades on newer malware (concept drift indicator) or maintains consistent accuracy across time periods.</div>
+      <div class="uc-scenarios">
+        <div class="uc-scenarios-label">Scenarios</div>
+        <div class="uc-scenario">Model health check: comparing pre-2020 vs. post-2020 F1 scores to detect whether the model is over-fitted to historical malware and under-performing on current threats.</div>
+        <div class="uc-scenario">Research evaluation: publishing a paper on EMBER2024 model performance that requires temporal stratification to demonstrate generalization to new threat families.</div>
+        <div class="uc-scenario">Retraining validation: after adding post-2020 samples to training data, re-running the benchmark to confirm the post-2020 F1 improved without regressing on the pre-2020 set.</div>
+      </div>
+    </div>
+
+    <div class="uc-card">
+      <div class="uc-card-header">
+        <div class="uc-icon eval-icon">Mode B</div>
+        <div class="uc-name">Adversarial / UPX Stealth Dataset</div>
+      </div>
+      <div class="uc-desc">Evaluates model performance against UPX-packed malware that deliberately obscures PE features. Uses a separate stealth/ subdirectory. Tests whether the LightGBM model can detect packers that reduce feature fidelity.</div>
+      <div class="uc-scenarios">
+        <div class="uc-scenarios-label">Scenarios</div>
+        <div class="uc-scenario">Red team evaluation: testing whether the model would catch their UPX-packed custom implant before deploying it in a purple team exercise.</div>
+        <div class="uc-scenario">Feature engineering research: identifying which EMBER2024 feature groups remain discriminative for packed executables to guide future feature work.</div>
+        <div class="uc-scenario">Adversarial robustness reporting for a security conference — quantifying the detection rate against common evasion techniques to contextualise claims about model effectiveness.</div>
+      </div>
+    </div>
+
+    <div class="uc-card">
+      <div class="uc-card-header">
+        <div class="uc-icon eval-icon">Mode C</div>
+        <div class="uc-name">Threshold Sweep (θ 0.40–0.80)</div>
+      </div>
+      <div class="uc-desc">Runs the full sample set at each classification threshold from 0.40 to 0.80 in 0.05 steps, producing a confusion matrix and full metric set at each point. Helps choose the operational threshold that balances FPR vs. FNR for the deployment context.</div>
+      <div class="uc-scenarios">
+        <div class="uc-scenarios-label">Scenarios</div>
+        <div class="uc-scenario">A SOC team with high alert fatigue needs to raise the threshold to reduce FP volume, using the sweep to find the highest θ that still maintains an acceptable FNR.</div>
+        <div class="uc-scenario">High-security deployment (e.g., critical infrastructure) requires minimising FNR regardless of FP cost — the sweep identifies the lowest safe threshold.</div>
+        <div class="uc-scenario">Generating a ROC-style threshold table for inclusion in a model evaluation report, showing the full precision-recall tradeoff curve.</div>
+      </div>
+    </div>
+
+    <div class="uc-card">
+      <div class="uc-card-header">
+        <div class="uc-icon eval-icon">--tier1</div>
+        <div class="uc-name">Cloud Consensus Evaluation</div>
+      </div>
+      <div class="uc-desc">Optional flag that routes each sample through the cloud API tier (VT, OTX, MetaDefender, MalwareBazaar) in addition to the ML tier, allowing a direct comparison of cloud consensus vs. offline ML accuracy on the same labeled sample set.</div>
+      <div class="uc-scenarios">
+        <div class="uc-scenarios-label">Scenarios</div>
+        <div class="uc-scenario">Justifying the need for offline ML: demonstrating that the local model catches malware that the cloud APIs miss (e.g., novel/private malware not yet in cloud databases).</div>
+        <div class="uc-scenario">API cost analysis: determining what proportion of cloud API calls are actually necessary by comparing cases where ML-only would have been sufficient.</div>
+        <div class="uc-scenario">Academic benchmarking: producing a fair comparison between CyberSentinel's tiered approach and pure cloud-lookup methods on the same dataset.</div>
+      </div>
+    </div>
+
+    <div class="uc-card">
+      <div class="uc-card-header">
+        <div class="uc-icon eval-icon">Output</div>
+        <div class="uc-name">JSON + TXT Forensic Report</div>
+      </div>
+      <div class="uc-desc">After the pipeline completes, exports a JSON metrics file (machine-readable) and a human-readable TXT report containing the full threshold sweep table, per-sample raw score log, and summary statistics. Persists in v2_predictions.db across runs.</div>
+      <div class="uc-scenarios">
+        <div class="uc-scenarios-label">Scenarios</div>
+        <div class="uc-scenario">Thesis submission: generating the benchmark report that forms the quantitative results section of a cybersecurity research paper.</div>
+        <div class="uc-scenario">Enterprise deployment sign-off: sharing the TXT report with a security review board as evidence that the model meets the organisation's stated detection requirements.</div>
+        <div class="uc-scenario">Regression tracking: running the harness after each model update and diff-ing the JSON output against the previous version's report to catch any performance regressions.</div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+</body>
+</html>
